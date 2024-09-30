@@ -19,11 +19,52 @@ prioritized_non_overlaps = {
 
 # Preferred and impossible slots
 # Session numbers count from 0 here
-preferences = {'NuX': [4, 5]}
-impossible_slots = {'3F': [0], 'DetSyst':[4,5], 'Exotics':[4,5]}
+preferences = {'NuX': [5, 6]}
+impossible_slots = {'3F': [1], 'DetSyst':[1,5,6], 'Exotics':[5,6]}
+
+# Previous version of the agenda to try to minimize changes from
+previous_agenda = {
+    1: [
+        "Computing",
+        "Reco",
+        "DetSyst",
+        "Exotics"
+    ],
+    2: [
+        "TB",
+        "Ops",
+        "Production",
+        "Xsec"
+    ],
+    3: [
+        "Beam",
+        "3F",
+        "Exotics",
+        "Joint TB + DetSyst"
+    ],
+    4: [
+        "TB",
+        "ND",
+        "Joint Reco + DetSyst + Xsec + Production + Beam + 3F + Computing"
+    ],
+    5: [
+        "NuX",
+        "3F",
+        "ND"
+    ],
+    6: [
+        "NuX",
+        "Reco",
+        "ND",
+        "Joint Xsec + Computing"
+    ]
+}
+
 
 # Run the scheduler
 schedule_sessions(group_sessions, joint_sessions, 
                   strict_non_overlaps, prioritized_non_overlaps, 
                   preferences, impossible_slots, 
-                  num_sessions=num_sessions, num_tracks=num_tracks)
+                  num_sessions=num_sessions, num_tracks=num_tracks,
+                  previous_agenda=previous_agenda,
+                  num_iterations=5000)

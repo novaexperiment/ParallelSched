@@ -5,7 +5,7 @@ This tool depends on the `ortools` package. I suggest installing it in a virtual
 ```
 pytohn3 -m venv scheduler_env
 source scheduler_env/bin/activate
-pip install ortools
+pip install ortools tqdm
 ```
 An example configuration can be found in `fall2024.py`. You specify the following:
 - Single sessions as requested by various groups
