@@ -145,7 +145,15 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
             allowed_values = preferred_sessions
             model.AddAllowedAssignments([session], [[val] for val in allowed_values])
 
-    # Limit the number of parallel sessions per time slot (based on num_tracks)
+    # Ensure joint sessions that share groups don't overlap
+    for idx1, joint1 in enumerate(joint_sessions):
+        for idx2, joint2 in enumerate(joint_sessions):
+            if idx1 < idx2 and set(joint1).intersection(set(joint2)):
+                # If joint sessions share any group, ensure they are in different sessions
+                model.Add(joint_session_vars[idx1] != joint_session_vars[idx2])
+
+    # Track the number of sessions in each time slot
+    session_counts = []
     for sess in range(num_sessions):
         session_count = []
         # Collect all session variables (groups + joint sessions)
@@ -161,18 +169,36 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
             model.Add(joint_session == sess).OnlyEnforceIf(session_count[-1])
             model.Add(joint_session != sess).OnlyEnforceIf(session_count[-1].Not())
 
+        # Sum up sessions in this time slot
+        count_var = model.NewIntVar(0, num_tracks, f'count_{sess}')
+        model.Add(count_var == sum(session_count))
+        session_counts.append(count_var)
+        
         # Limit to num_tracks sessions in parallel
-        model.Add(sum(session_count) <= num_tracks)
+        model.Add(count_var <= num_tracks)
 
-    # Ensure joint sessions that share groups don't overlap
-    for idx1, joint1 in enumerate(joint_sessions):
-        for idx2, joint2 in enumerate(joint_sessions):
-            if idx1 < idx2 and set(joint1).intersection(set(joint2)):
-                # If joint sessions share any group, ensure they are in different sessions
-                model.Add(joint_session_vars[idx1] != joint_session_vars[idx2])
+    # Add balance constraints between sessions
+    balance_penalties = []
+    for i in range(num_sessions):
+        for j in range(i + 1, num_sessions):
+            # Create penalty variable for difference between session counts
+            diff_plus = model.NewIntVar(0, num_tracks, f'diff_plus_{i}_{j}')
+            diff_minus = model.NewIntVar(0, num_tracks, f'diff_minus_{i}_{j}')
+            
+            # diff_plus - diff_minus = session_counts[i] - session_counts[j]
+            model.Add(diff_plus - diff_minus == session_counts[i] - session_counts[j])
+            
+            # Add both directions to penalties
+            balance_penalties.extend([diff_plus, diff_minus])
 
-    # Minimize penalties for soft constraints
-    model.Minimize(sum(penalty * weight for penalty, weight in overlap_penalties))
+    # Update the objective function to include both overlap and balance penalties
+    total_objective = sum(penalty * weight for penalty, weight in overlap_penalties)
+    balance_weight = 1  # Adjust this weight to control importance of balance
+    total_objective += balance_weight * sum(balance_penalties)
+    
+
+    # Set the objective
+    model.Minimize(total_objective)
 
     # Solve the model
     solver = cp_model.CpSolver()
