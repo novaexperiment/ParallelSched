@@ -1,6 +1,4 @@
 from ortools.sat.python import cp_model
-import random
-from tqdm import tqdm  # Import tqdm for progress bar
 
 def collect_solution(solver, group_vars, joint_session_vars, joint_sessions, num_sessions):
     """ Helper function to format and return a given solution as an agenda dictionary. """
@@ -27,7 +25,6 @@ def calculate_changes(current_agenda, previous_agenda):
     if not previous_agenda:
         return changes
 
-    #print("Debugging change calculation...")  # Debug statement
     # Compare each session in the current agenda to the previous one
     for sess, current_items in current_agenda.items():
         previous_items = previous_agenda.get(sess, [])
@@ -35,10 +32,6 @@ def calculate_changes(current_agenda, previous_agenda):
         # Normalize the session lists by sorting them and stripping any extra spaces
         normalized_current_items = sorted([item.strip() for item in current_items])
         normalized_previous_items = sorted([item.strip() for item in previous_items])
-
-        #print(f"Session {sess}:")  # Debug statement
-        #print(f"  Current: {normalized_current_items}")  # Debug statement
-        #print(f"  Previous: {normalized_previous_items}")  # Debug statement
 
         # Calculate the number of items that are different or in different sessions
         for item in normalized_current_items:
@@ -64,7 +57,7 @@ def convert_values_to_0_based(input_dict):
     return {key: convert_value(value) for key, value in input_dict.items()}
 
 
-def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps, preferences, impossible_slots, num_sessions, num_tracks):
+def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps, preferences, impossible_slots, num_sessions, num_tracks, previous_agenda=None):
     """ A single run of the scheduling logic to produce one solution. """
     model = cp_model.CpModel()
 
@@ -191,18 +184,80 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
             # Add both directions to penalties
             balance_penalties.extend([diff_plus, diff_minus])
 
-    # Update the objective function to include both overlap and balance penalties
+    # Create similarity penalties for deviating from previous agenda
+    similarity_penalties = []
+    if previous_agenda:
+        for slot, sessions in previous_agenda.items():
+            slot_idx = slot - 1
+            for session in sessions:
+                if session.startswith("Joint"):
+                    # Handle joint sessions
+                    groups = [g.strip() for g in session.replace("Joint ", "").split(" + ")]
+                    for idx, joint in enumerate(joint_sessions):
+                        if set(joint) == set(groups):
+                            penalty_var = model.NewBoolVar(f'joint_{idx}_moved_from_{slot}')
+                            model.Add(joint_session_vars[idx] != slot_idx).OnlyEnforceIf(penalty_var)
+                            model.Add(joint_session_vars[idx] == slot_idx).OnlyEnforceIf(penalty_var.Not())
+                            similarity_penalties.append((penalty_var, 100))  # High weight to preserve joint sessions
+                else:
+                    # Handle regular sessions
+                    group = session.strip()
+                    if group in group_vars:
+                        # Add penalty for each session of this group not being in this slot
+                        for var in group_vars[group]:
+                            penalty_var = model.NewBoolVar(f'{group}_moved_from_{slot}')
+                            model.Add(var != slot_idx).OnlyEnforceIf(penalty_var)
+                            model.Add(var == slot_idx).OnlyEnforceIf(penalty_var.Not())
+                            similarity_penalties.append((penalty_var, 50))  # Medium weight to preserve regular sessions
+
+    # Update the objective function to include overlap penalties.
     total_objective = sum(penalty * weight for penalty, weight in overlap_penalties)
-    balance_weight = 1  # Adjust this weight to control importance of balance
-    total_objective += balance_weight * sum(balance_penalties)
-    
 
-    # Set the objective
+    # Update the objective function to have *either* balance or similarity penalties
+    if previous_agenda:
+        similarity_weight = 1  # Adjust this weight to control importance of similarity
+        total_objective += similarity_weight * sum(penalty * weight for penalty, weight in similarity_penalties)
+    else:
+        balance_weight = 1  # Adjust this weight to control importance of balance
+        total_objective += balance_weight * sum(balance_penalties)
+
+
     model.Minimize(total_objective)
-
-    # Solve the model
+    
+    # Add hints from previous agenda if available
+    if previous_agenda:
+        # Track which variables have been hinted
+        hinted_vars = set()
+        assigned_sessions = {group: set() for group in group_vars.keys()}
+        assigned_joint_sessions = {idx: None for idx in joint_session_vars.keys()}
+        
+        # First pass: collect positive assignments from previous agenda
+        for slot, sessions in previous_agenda.items():
+            slot_idx = slot - 1  # Convert to 0-based indexing
+            for session in sessions:
+                if session.startswith("Joint"):
+                    # Handle joint sessions
+                    groups = [g.strip() for g in session.replace("Joint ", "").split(" + ")]
+                    for idx, joint in enumerate(joint_sessions):
+                        if set(joint) == set(groups) and idx not in hinted_vars:
+                            model.AddHint(joint_session_vars[idx], slot_idx)
+                            assigned_joint_sessions[idx] = slot_idx
+                            hinted_vars.add(idx)
+                else:
+                    # Handle regular sessions
+                    group = session.strip()
+                    if group in group_vars:
+                        # Find an unassigned variable for this group
+                        for var in group_vars[group]:
+                            if var not in hinted_vars and (group not in assigned_sessions or len(assigned_sessions[group]) < len(group_vars[group])):
+                                model.AddHint(var, slot_idx)
+                                assigned_sessions[group].add(slot_idx)
+                                hinted_vars.add(var)
+                                break
+    
+    print("\nProceeding with solve...")
     solver = cp_model.CpSolver()
-    solver.parameters.random_seed = random.randint(0, 1000000)  # Random seed for varied results
+
     status = solver.Solve(model)
 
     # Check if a feasible or optimal solution is found
@@ -212,49 +267,30 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
         return None
 
 
-def schedule_sessions(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps, preferences, impossible_slots, num_sessions, num_tracks, previous_agenda=None, num_iterations=100):
-    """ Wrapper function to run multiple iterations of the scheduler and pick the best solution. """
-    best_solution = None
-    min_changes = float('inf')
+def schedule_sessions(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps, preferences, impossible_slots, num_sessions, num_tracks, previous_agenda=None):
+    """ Schedule parallel sessions with constraints and optional previous agenda to minimize changes. """
+    solution = schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps, 
+                                   preferences, impossible_slots, num_sessions, num_tracks, previous_agenda)
 
-    # Check if previous agenda is given; if not, run a single iteration
-    if not previous_agenda:
-        num_iterations = 1
+    if solution:
+        if previous_agenda:
+            changes = calculate_changes(solution, previous_agenda)
+            print(f"\nSolution with {changes} changes compared to the previous agenda:")
 
-    # Run the scheduling function multiple times and collect solutions
-    for _ in tqdm(range(num_iterations), desc="Evaluating solutions"):
-        solution = schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps, preferences, impossible_slots, num_sessions, num_tracks)
-
-        # Skip if no solution was found in this iteration
-        if not solution:
-            continue
-
-        # Calculate the number of changes relative to the previous agenda
-        changes = calculate_changes(solution, previous_agenda)
-
-        # Update the best solution if the current solution has fewer changes
-        if changes < min_changes:
-            min_changes = changes
-            best_solution = solution
-
-    # Print the best solution found with marked changes
-    if best_solution:
-        print(f"\nBest Solution with {min_changes} changes compared to the previous agenda:")
-
-        for sess, items in sorted(best_solution.items()):
+        for sess, items in sorted(solution.items()):
             normalized_current_items = sorted([item.strip() for item in items])
             print(f"\nSession {sess}:")
             if previous_agenda:
-                # Get the previous session items and normalize them
                 prev_session_items = sorted([item.strip() for item in previous_agenda.get(sess, [])])
                 for item in normalized_current_items:
-                    # Mark with * if the item is not present in the previous agenda or has moved
                     if item not in prev_session_items:
                         print(f"  {item}*")  # Mark with an asterisk to indicate change
                     else:
-                        print(f"  {item}")  # No change
+                        print(f"  {item}")
             else:
                 for item in normalized_current_items:
-                    print(f"  {item}")  # No previous agenda, just print items
+                    print(f"  {item}")
+        return solution
     else:
-        print("No feasible solution found")
+        print("\nNo feasible solution found")
+        return None

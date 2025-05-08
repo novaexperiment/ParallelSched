@@ -66,5 +66,4 @@ schedule_sessions(group_sessions, joint_sessions,
                   strict_non_overlaps, prioritized_non_overlaps, 
                   preferences, impossible_slots, 
                   num_sessions=num_sessions, num_tracks=num_tracks,
-                  previous_agenda=previous_agenda,
-                  num_iterations=5000)
+                  previous_agenda=previous_agenda)
