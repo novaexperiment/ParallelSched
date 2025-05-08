@@ -2,7 +2,7 @@ from ParallelSched import schedule_sessions
 
 # Event information
 num_sessions = 6
-num_tracks = 4   # number of parallels per session
+num_tracks   = 4   # number of parallels per session
 
 # Requested Sessions
 group_sessions = {'TB': 2, 'Ops': 1, 
@@ -28,7 +28,7 @@ prioritized_non_overlaps = {
     'Ops': ['Exotics','ND'],
     'DetSyst': ['TB', 'NuX'],
     'Computing': ['NuX'],
-    'NuX': ['Computing'],
+    'NuX': ['NOvA-T2K','Computing'],
     'Exotics': ['Ops'],
     '3F': ['NOvA-T2K','Prod6'],
     'Exotics': ['Ops'],
@@ -37,55 +37,50 @@ prioritized_non_overlaps = {
 
 # Preferred and impossible slots
 # Session numbers count from 1 here
-preferences = {'Exotics':[3,5]}
-impossible_slots = {'3F': [3,4], 
-                    'Exotics': [1,2]
-                    }
+preferences =      {'Exotics':[3,5], 'NOvA-T2K':[1,2,5,6], 'Beam':[3,4,5,6]}
+impossible_slots = {'3F': [3,4], 'Exotics': [1,2] }
 
 # Previous version of the agenda to try to minimize changes from
-'''
 previous_agenda = {
     1: [
+        "3F",
         "Computing",
-        "Xsec",
-        "TB",
-        "Exotics"
+        "ND",
+        "TB"
     ],
     2: [
-        "DetSyst",
-        "Ops",
-        "Production",
-        "3F"
+        "Joint TB + DetSyst",
+        "ND",
+        "NuX",
+        "Production"
     ],
     3: [
-        "Beam",
-        "Reco",
-        "Exotics",
-        "Joint TB + DetSyst"
+        "DetSyst",
+        "Code of Conduct",
+        "Exotics"
     ],
     4: [
-        "TB",
-        "ND",
-        "Joint Reco + DetSyst + Xsec + Production + Beam + 3F + Computing"
+        "Beam",
+        "NOvA-T2K",
+        "NuX",
+        "Ops"
     ],
     5: [
-        "NuX",
-        "3F",
-        "ND"
+        "Exotics",
+        "Prod6",
+        "TB"
     ],
     6: [
-        "NuX",
-        "Reco",
+        "3F",
         "ND",
-        "Joint Xsec + Computing"
+        "Reco"
     ]
 }
-'''
+
 
 # Run the scheduler
 schedule_sessions(group_sessions, joint_sessions, 
                   strict_non_overlaps, prioritized_non_overlaps, 
                   preferences, impossible_slots, 
                   num_sessions=num_sessions, num_tracks=num_tracks,
-                  #previous_agenda=previous_agenda,
-                  num_iterations=5000)
+                  previous_agenda=previous_agenda)
