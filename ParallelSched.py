@@ -217,9 +217,8 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
     if previous_agenda:
         similarity_weight = 1  # Adjust this weight to control importance of similarity
         total_objective += similarity_weight * sum(penalty * weight for penalty, weight in similarity_penalties)
-    else:
-        balance_weight = 1  # Adjust this weight to control importance of balance
-        total_objective += balance_weight * sum(balance_penalties)
+    balance_weight = 10  # Adjust this weight to control importance of balance
+    total_objective += balance_weight * sum(balance_penalties)
 
 
     model.Minimize(total_objective)
