@@ -37,8 +37,8 @@ prioritized_non_overlaps = {
 
 # Preferred and impossible slots
 # Session numbers count from 1 here
-preferences =      {'Exotics':[3,5], 'NOvA-T2K':[1,2,5,6], 'Beam':[3,4,5,6]}
-impossible_slots = {'3F': [3,4], 'Exotics': [1,2] }
+preferences =      {'Exotics':[3,5], 'NOvA-T2K':[1,2,5,6], 'DetSyst':[5,6], 'Beam':[3,5], 'NuX':[1,4] }
+impossible_slots = {'3F': [3,4], 'Exotics': [1,2], 'Beam':[1,2], 'DetSyst':[3,4], 'Prod6':[3,4] }
 
 # Previous version of the agenda to try to minimize changes from
 previous_agenda = {
@@ -51,17 +51,16 @@ previous_agenda = {
     2: [
         "Joint TB + DetSyst",
         "ND",
-        "NuX",
+        "NOvA-T2K",
         "Production"
     ],
     3: [
-        "DetSyst",
+        "Beam",
         "Code of Conduct",
-        "Exotics"
+        "Exotics",
+        "NuX"
     ],
     4: [
-        "Beam",
-        "NOvA-T2K",
         "NuX",
         "Ops"
     ],
@@ -72,6 +71,7 @@ previous_agenda = {
     ],
     6: [
         "3F",
+        "DetSyst",
         "ND",
         "Reco"
     ]
