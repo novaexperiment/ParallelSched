@@ -85,15 +85,19 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
     for idx, joint in enumerate(joint_sessions):
         joint_session = joint_session_vars[idx]
         for group in joint:
+            # Only add constraints for groups that have standalone sessions
+            if group not in group_vars:
+                continue
             for session in group_vars[group]:
                 model.Add(session != joint_session)  # No overlap with group sessions
 
     # Add impossible slots constraints (converted to 0-based internally)
     for group, impossible_sessions in impossible_slots.items():
-        # Apply impossible sessions to individual group sessions
-        for session in group_vars[group]:
-            for impossible in impossible_sessions:
-                model.Add(session != impossible)
+        # Apply impossible sessions to individual group sessions (only if group exists)
+        if group in group_vars:
+            for session in group_vars[group]:
+                for impossible in impossible_sessions:
+                    model.Add(session != impossible)
 
         # Apply impossible sessions to joint sessions if the group is part of the joint session
         for idx, joint in enumerate(joint_sessions):
@@ -105,26 +109,33 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
     for non_overlap_pair in strict_non_overlaps:
         group1, group2 = non_overlap_pair
 
-        # Enforce non-overlap between regular group sessions
-        for session1 in group_vars[group1]:
-            for session2 in group_vars[group2]:
-                model.Add(session1 != session2)
+        # Enforce non-overlap between regular group sessions (only if both groups exist)
+        if group1 in group_vars and group2 in group_vars:
+            for session1 in group_vars[group1]:
+                for session2 in group_vars[group2]:
+                    model.Add(session1 != session2)
 
         # Enforce non-overlap between joint sessions and strict non-overlap pairs
         # Check if group1 or group2 is part of any joint session
         for idx, joint_session in joint_session_vars.items():
             joint = joint_sessions[idx]
-            if group1 in joint:
+            if group1 in joint and group2 in group_vars:
                 for session2 in group_vars[group2]:
                     model.Add(joint_session != session2)  # Group1 is in a joint session, no overlap with Group2
-            if group2 in joint:
+            if group2 in joint and group1 in group_vars:
                 for session1 in group_vars[group1]:
                     model.Add(joint_session != session1)  # Group2 is in a joint session, no overlap with Group1
 
     # Add prioritized non-overlapping constraints with penalties (soft constraints)
     overlap_penalties = []
     for group, conflicts in prioritized_non_overlaps.items():
+        # Skip if the main group doesn't exist as a standalone session
+        if group not in group_vars:
+            continue
         for i, conflict_group in enumerate(conflicts):
+            # Skip conflict if the conflict group doesn't exist as a standalone session
+            if conflict_group not in group_vars:
+                continue
             for session1 in group_vars[group]:
                 for session2 in group_vars[conflict_group]:
                     penalty_var = model.NewBoolVar(f'{group}_overlaps_{conflict_group}_{i}')
@@ -134,6 +145,9 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
 
     # Apply preferences (converted to 0-based internally)
     for group, preferred_sessions in preferences.items():
+        # Only apply preferences to groups that have standalone sessions
+        if group not in group_vars:
+            continue
         for session in group_vars[group]:
             allowed_values = preferred_sessions
             model.AddAllowedAssignments([session], [[val] for val in allowed_values])
