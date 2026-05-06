@@ -303,6 +303,16 @@ def schedule_sessions(group_sessions, joint_sessions, strict_non_overlaps, prior
             else:
                 for item in normalized_current_items:
                     print(f"  {item}")
+        
+        # Print in copy-paste format for previous_agenda
+        print("\n\n# Copy-paste format for previous_agenda:")
+        print("previous_agenda = {")
+        for sess, items in sorted(solution.items()):
+            normalized_items = sorted([item.strip() for item in items])
+            items_str = ', '.join(f'"{item}"' for item in normalized_items)
+            print(f"    {sess}: [{items_str}],")
+        print("}")
+        
         return solution
     else:
         print("\nNo feasible solution found")
