@@ -1,0 +1,45 @@
+name: summer2026
+num_sessions: 7
+num_tracks: 3
+slot_labels: []
+slot_groups:
+  am: [1, 2, 5, 6]
+  long: [7]
+group_sessions: {TB: 1, Ops: 1, Production: 1, Reco: 1, DetSyst: 1, Beam: 1, 3F: 2, NuX: 1, ND: 3, ND-WT: 1,
+  Exotics: 2, T2K: 1, Neutron: 1, Validation: 1, Hold-WT: 1, AI: 1}
+joint_sessions:
+- [T2K, NuX]
+strict_non_overlaps:
+- [Production, Computing]
+- [ND, Neutron]
+- [Validation, 3F]
+- [ND, ND-WT]
+- [AI, Reco]
+prioritized_non_overlaps:
+  Validation: [Reco, DetSyst]
+  ND: [Neutron]
+  Neutron: [DetSyst, Ops, ND]
+  T2K: [NuX]
+  Production: [T2K, NuX, Neutron]
+  TB: [DetSyst, NuX]
+  NuX: [Production, DetSyst]
+  3F: [Reco, T2K]
+  Ops: [Exotics, ND]
+allowed_slots:
+  Exotics: [1, 2, 5, 6]
+  NuX: [1, 2, 5, 6]
+  Validation: [7]
+  ND-WT: [7]
+  Hold-WT: [7]
+  AI: [6]
+impossible_slots: {}
+previous_agenda:
+  1: [ND, Production, TB]
+  2: [3F, DetSyst, Ops]
+  3: [Beam, Joint T2K + NuX, Neutron]
+  4: [ND, Reco, T2K]
+  5: [3F, Exotics, NuX]
+  6: [AI, Exotics, ND]
+  7: [Hold-WT, ND-WT, Validation]
+weights: {balance: 10, similarity: 1}
+solver: {random_seed: 0, max_seconds: 60}

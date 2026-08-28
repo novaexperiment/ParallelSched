@@ -1,0 +1,34 @@
+name: winter2026
+num_sessions: 5
+num_tracks: 4
+slot_labels: []
+slot_groups: {}
+group_sessions: {TB: 1, Ops: 1, Production: 1, Reco: 1, DetSyst: 1, Beam: 1, 3F: 2, NuX: 2, ND: 3, Exotics: 2,
+  T2K: 1, Neutron: 1}
+joint_sessions: []
+strict_non_overlaps:
+- [Production, Computing]
+- [ND, Neutron]
+- [DetSyst, Neutron]
+prioritized_non_overlaps:
+  ND: [Neutron]
+  Neutron: [DetSyst, Ops, ND]
+  Production: [T2K]
+  TB: [DetSyst, NuX]
+  NuX: [Computing, DetSyst]
+  3F: [Reco, T2K]
+  Ops: [Exotics, ND]
+allowed_slots:
+  Exotics: [1, 2]
+  NuX: [1, 2]
+  Beam: [1, 2]
+  TB: [1, 2]
+impossible_slots: {}
+previous_agenda:
+  1: [ND, NuX, 3F, Exotics]
+  2: [ND, NuX, Beam, Exotics]
+  3: [ND, Test Beam, Production]
+  4: [Neutron, Reco, T2K]
+  5: [3F, DetSyst, Ops]
+weights: {balance: 10, similarity: 1}
+solver: {random_seed: 0, max_seconds: 60}

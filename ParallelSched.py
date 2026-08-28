@@ -1,4 +1,48 @@
+"""Scheduling engine for NOvA parallel sessions.
+
+Layered so that both the command-line config scripts and the web UI share one model:
+
+    validate_config(...)  -> (errors, warnings)     cheap checks, no solver
+    solve(...)            -> SolveResult            builds + solves, never prints
+    format_agenda(...)    -> str                    presentation only
+    schedule_sessions(...)                          thin wrapper: solve then print
+
+`schedule_sessions` keeps its original signature and output so the existing
+per-meeting scripts (summer2026.py and friends) run unchanged.
+"""
+
+import difflib
+
 from ortools.sat.python import cp_model
+
+# Single-worker solving is deterministic *and* costs nothing measurable on
+# problems this size, so the same config always yields the same agenda. Vary
+# random_seed to get a different (equally optimal) arrangement on purpose.
+DEFAULT_NUM_WORKERS = 1
+DEFAULT_RANDOM_SEED = 0
+DEFAULT_MAX_SECONDS = 60.0
+
+
+class SolveResult:
+    """Everything a caller needs to render a solve, with no printing done for it."""
+
+    def __init__(self, solution=None, status="UNKNOWN", num_changes=None,
+                 moved=None, warnings=None, errors=None, conflicts=None,
+                 objective=None, wall_time=0.0):
+        self.solution = solution          # dict[int, list[str]] or None
+        self.status = status              # CP-SAT status name, or PRE_FLIGHT_FAILED
+        self.num_changes = num_changes    # int, or None when no previous agenda
+        self.moved = moved or {}          # dict[int, list[str]] items new to that slot
+        self.warnings = warnings or []    # non-blocking, e.g. unknown group names
+        self.errors = errors or []        # blocking pre-flight problems
+        self.conflicts = conflicts or []  # named constraints that cannot all hold
+        self.objective = objective
+        self.wall_time = wall_time
+
+    @property
+    def ok(self):
+        return self.solution is not None
+
 
 def collect_solution(solver, group_vars, joint_session_vars, joint_sessions, num_sessions):
     """ Helper function to format and return a given solution as an agenda dictionary. """
@@ -41,6 +85,25 @@ def calculate_changes(current_agenda, previous_agenda):
     return changes
 
 
+def compute_moved(solution, previous_agenda):
+    """Per slot, which items are new relative to the previous agenda.
+
+    This is the structured form of the ``*`` markers the text output prints, so
+    the UI can highlight moves without re-deriving the rule.
+    """
+    moved = {}
+    if not solution:
+        return moved
+    for sess, items in solution.items():
+        current = sorted([item.strip() for item in items])
+        if not previous_agenda:
+            moved[sess] = []
+            continue
+        previous = sorted([item.strip() for item in previous_agenda.get(sess, [])])
+        moved[sess] = [item for item in current if item not in previous]
+    return moved
+
+
 def convert_values_to_0_based(input_dict):
     """
     Convert all integer values or list of integer values in a dictionary to 0-based indexing.
@@ -57,9 +120,145 @@ def convert_values_to_0_based(input_dict):
     return {key: convert_value(value) for key, value in input_dict.items()}
 
 
-def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps, preferences, impossible_slots, num_sessions, num_tracks, previous_agenda=None):
-    """ A single run of the scheduling logic to produce one solution. """
+def joint_label(joint):
+    """The canonical agenda label for a joint session, e.g. 'Joint T2K + NuX'."""
+    return "Joint " + " + ".join(joint)
+
+
+def _suggest(name, known):
+    """'did you mean' helper for mistyped group names."""
+    match = difflib.get_close_matches(name, list(known), n=1, cutoff=0.6)
+    return f" Did you mean '{match[0]}'?" if match else ""
+
+
+def validate_config(group_sessions, joint_sessions, strict_non_overlaps,
+                    prioritized_non_overlaps, preferences, impossible_slots,
+                    num_sessions, num_tracks, previous_agenda=None):
+    """Cheap pre-solve checks. Returns (errors, warnings), both lists of strings.
+
+    Errors make the solve pointless; warnings flag things the model silently
+    ignores (chiefly names matching no group, which is how typos hide).
+    """
+    errors, warnings = [], []
+    known = set(group_sessions)
+
+    if num_sessions < 1:
+        errors.append("Number of time slots must be at least 1.")
+    if num_tracks < 1:
+        errors.append("Number of parallel tracks must be at least 1.")
+
+    # Capacity: nothing in the model checks this, and violating it just yields a
+    # bare "no feasible solution".
+    requested = sum(group_sessions.values()) + len(joint_sessions)
+    capacity = num_sessions * num_tracks
+    if requested > capacity:
+        errors.append(
+            f"Too many sessions to fit: {requested} requested "
+            f"({sum(group_sessions.values())} group + {len(joint_sessions)} joint) but only "
+            f"{capacity} places available ({num_sessions} slots x {num_tracks} tracks). "
+            f"Add a slot or a track, or drop {requested - capacity} session(s)."
+        )
+
+    for group, count in group_sessions.items():
+        if count < 1:
+            errors.append(f"'{group}' requests {count} sessions; must be at least 1.")
+        elif count > num_sessions:
+            errors.append(
+                f"'{group}' requests {count} sessions but there are only {num_sessions} "
+                f"time slots, and a group cannot appear twice in one slot."
+            )
+
+    # A whitelist narrower than the group's own multiplicity is infeasible, and
+    # this message is far clearer than what the solver would say.
+    for group, allowed in (preferences or {}).items():
+        if group in group_sessions and allowed:
+            need = group_sessions[group]
+            if len(set(allowed)) < need:
+                errors.append(
+                    f"'{group}' needs {need} sessions but is restricted to "
+                    f"{len(set(allowed))} slot(s) {sorted(set(allowed))}. "
+                    f"Allow it at least {need} slots."
+                )
+            out_of_range = sorted(s for s in set(allowed) if not 1 <= s <= num_sessions)
+            if out_of_range:
+                errors.append(
+                    f"'{group}' is restricted to slot(s) {out_of_range}, outside 1..{num_sessions}."
+                )
+
+    for group, blocked in (impossible_slots or {}).items():
+        if group in group_sessions and blocked:
+            free = [s for s in range(1, num_sessions + 1) if s not in set(blocked)]
+            if len(free) < group_sessions[group]:
+                errors.append(
+                    f"'{group}' needs {group_sessions[group]} sessions but only {len(free)} "
+                    f"slot(s) remain after blocking {sorted(set(blocked))}."
+                )
+
+    # Unknown names. The model deliberately skips these, which is handy for
+    # carrying stale constraints around, but it also swallows typos silently.
+    def check_name(name, where):
+        if name not in known:
+            warnings.append(
+                f"{where} refers to '{name}', which is not a requested group, "
+                f"so it is ignored.{_suggest(name, known)}")
+
+    for pair in strict_non_overlaps:
+        for name in pair:
+            check_name(name, "Strict conflict")
+    for group, conflicts in (prioritized_non_overlaps or {}).items():
+        check_name(group, "Soft conflict")
+        for name in conflicts:
+            check_name(name, f"Soft conflict for '{group}'")
+    for group in (preferences or {}):
+        check_name(group, "Slot restriction")
+    for group in (impossible_slots or {}):
+        check_name(group, "Blocked slot")
+    for joint in joint_sessions:
+        for name in joint:
+            check_name(name, f"Joint session '{joint_label(joint)}'")
+
+    if previous_agenda:
+        valid_labels = known | {joint_label(j) for j in joint_sessions}
+        for slot, items in previous_agenda.items():
+            if not 1 <= slot <= num_sessions:
+                warnings.append(
+                    f"Previous agenda has slot {slot}, outside 1..{num_sessions}; ignored.")
+            for item in items:
+                item = item.strip()
+                if item not in valid_labels:
+                    warnings.append(
+                        f"Previous agenda slot {slot} lists '{item}', which matches no group or "
+                        f"joint session, so it does not anchor anything.{_suggest(item, valid_labels)}"
+                    )
+
+    return errors, warnings
+
+
+def _build_model(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps,
+                 preferences, impossible_slots, num_sessions, num_tracks, previous_agenda=None,
+                 balance_weight=10, similarity_weight=1, relaxable=False):
+    """Build the CP-SAT model.
+
+    When ``relaxable`` is true, every user-supplied hard constraint is attached to
+    an assumption literal so an infeasible model can be explained in terms of the
+    constraints the user actually wrote. The happy path builds without assumptions
+    so normal solving is untouched.
+    """
     model = cp_model.CpModel()
+    assumptions = []
+
+    def relaxable_constraint(description):
+        """Return a literal to enforce `description` under, or None if not relaxing."""
+        if not relaxable:
+            return None
+        lit = model.NewBoolVar(f'assume_{len(assumptions)}')
+        model.AddAssumption(lit)
+        assumptions.append((lit, description))
+        return lit
+
+    def add(constraint, lit):
+        if lit is not None:
+            constraint.OnlyEnforceIf(lit)
 
     # Convert 1-based preferences and impossible_slots to 0-based internally
     preferences = convert_values_to_0_based(preferences)
@@ -81,7 +280,7 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
     for idx, joint in enumerate(joint_sessions):
         joint_session_vars[idx] = model.NewIntVar(0, num_sessions - 1, f'joint_session_{idx}')
 
-    # Ensure joint sessions don’t overlap with their member groups’ regular sessions
+    # Ensure joint sessions don't overlap with their member groups' regular sessions
     for idx, joint in enumerate(joint_sessions):
         joint_session = joint_session_vars[idx]
         for group in joint:
@@ -93,27 +292,35 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
 
     # Add impossible slots constraints (converted to 0-based internally)
     for group, impossible_sessions in impossible_slots.items():
+        lit = None
+        if impossible_sessions and (group in group_vars or any(group in j for j in joint_sessions)):
+            shown = sorted(s + 1 for s in impossible_sessions)
+            lit = relaxable_constraint(f"'{group}' cannot use slot(s) {shown}")
+
         # Apply impossible sessions to individual group sessions (only if group exists)
         if group in group_vars:
             for session in group_vars[group]:
                 for impossible in impossible_sessions:
-                    model.Add(session != impossible)
+                    add(model.Add(session != impossible), lit)
 
         # Apply impossible sessions to joint sessions if the group is part of the joint session
         for idx, joint in enumerate(joint_sessions):
             if group in joint:
                 for impossible in impossible_sessions:
-                    model.Add(joint_session_vars[idx] != impossible)
+                    add(model.Add(joint_session_vars[idx] != impossible), lit)
 
     # Enforce strict non-overlap constraints, including for joint sessions
     for non_overlap_pair in strict_non_overlaps:
         group1, group2 = non_overlap_pair
+        lit = None
+        if group1 in group_vars or group2 in group_vars:
+            lit = relaxable_constraint(f"'{group1}' and '{group2}' must never share a slot")
 
         # Enforce non-overlap between regular group sessions (only if both groups exist)
         if group1 in group_vars and group2 in group_vars:
             for session1 in group_vars[group1]:
                 for session2 in group_vars[group2]:
-                    model.Add(session1 != session2)
+                    add(model.Add(session1 != session2), lit)
 
         # Enforce non-overlap between joint sessions and strict non-overlap pairs
         # Check if group1 or group2 is part of any joint session
@@ -121,10 +328,10 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
             joint = joint_sessions[idx]
             if group1 in joint and group2 in group_vars:
                 for session2 in group_vars[group2]:
-                    model.Add(joint_session != session2)  # Group1 is in a joint session, no overlap with Group2
+                    add(model.Add(joint_session != session2), lit)  # Group1 is in a joint session, no overlap with Group2
             if group2 in joint and group1 in group_vars:
                 for session1 in group_vars[group1]:
-                    model.Add(joint_session != session1)  # Group2 is in a joint session, no overlap with Group1
+                    add(model.Add(joint_session != session1), lit)  # Group2 is in a joint session, no overlap with Group1
 
     # Add prioritized non-overlapping constraints with penalties (soft constraints)
     overlap_penalties = []
@@ -148,9 +355,18 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
         # Only apply preferences to groups that have standalone sessions
         if group not in group_vars:
             continue
+        shown = sorted(s + 1 for s in preferred_sessions)
+        lit = relaxable_constraint(f"'{group}' is restricted to slot(s) {shown}")
         for session in group_vars[group]:
             allowed_values = preferred_sessions
-            model.AddAllowedAssignments([session], [[val] for val in allowed_values])
+            if lit is None:
+                model.AddAllowedAssignments([session], [[val] for val in allowed_values])
+            else:
+                # AddAllowedAssignments cannot be enforced conditionally, so forbid
+                # the complement instead - equivalent, and relaxable.
+                for val in range(num_sessions):
+                    if val not in allowed_values:
+                        model.Add(session != val).OnlyEnforceIf(lit)
 
     # Ensure joint sessions that share groups don't overlap
     for idx1, joint1 in enumerate(joint_sessions):
@@ -180,7 +396,7 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
         count_var = model.NewIntVar(0, num_tracks, f'count_{sess}')
         model.Add(count_var == sum(session_count))
         session_counts.append(count_var)
-        
+
         # Limit to num_tracks sessions in parallel
         model.Add(count_var <= num_tracks)
 
@@ -191,10 +407,10 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
             # Create penalty variable for difference between session counts
             diff_plus = model.NewIntVar(0, num_tracks, f'diff_plus_{i}_{j}')
             diff_minus = model.NewIntVar(0, num_tracks, f'diff_minus_{i}_{j}')
-            
+
             # diff_plus - diff_minus = session_counts[i] - session_counts[j]
             model.Add(diff_plus - diff_minus == session_counts[i] - session_counts[j])
-            
+
             # Add both directions to penalties
             balance_penalties.extend([diff_plus, diff_minus])
 
@@ -229,21 +445,18 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
 
     # Update the objective function to have *either* balance or similarity penalties
     if previous_agenda:
-        similarity_weight = 1  # Adjust this weight to control importance of similarity
         total_objective += similarity_weight * sum(penalty * weight for penalty, weight in similarity_penalties)
-    balance_weight = 10  # Adjust this weight to control importance of balance
     total_objective += balance_weight * sum(balance_penalties)
 
-
     model.Minimize(total_objective)
-    
+
     # Add hints from previous agenda if available
     if previous_agenda:
         # Track which variables have been hinted
         hinted_vars = set()
         assigned_sessions = {group: set() for group in group_vars.keys()}
         assigned_joint_sessions = {idx: None for idx in joint_session_vars.keys()}
-        
+
         # First pass: collect positive assignments from previous agenda
         for slot, sessions in previous_agenda.items():
             slot_idx = slot - 1  # Convert to 0-based indexing
@@ -267,53 +480,171 @@ def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, 
                                 assigned_sessions[group].add(slot_idx)
                                 hinted_vars.add(var)
                                 break
-    
-    print("\nProceeding with solve...")
-    solver = cp_model.CpSolver()
 
+    return model, group_vars, joint_session_vars, assumptions
+
+
+def _make_solver(num_workers, random_seed, max_seconds):
+    solver = cp_model.CpSolver()
+    solver.parameters.num_workers = num_workers
+    solver.parameters.random_seed = random_seed
+    solver.parameters.max_time_in_seconds = max_seconds
+    return solver
+
+
+MAX_SHRINK_SOLVES = 80
+
+
+def _explain_infeasible(build_kwargs, num_workers, random_seed, max_seconds):
+    """Name the smallest set of user constraints that cannot all hold at once.
+
+    CP-SAT's SufficientAssumptionsForInfeasibility returns a *sufficient* subset,
+    which in practice is often much larger than necessary. We then shrink it by
+    deletion: drop one constraint at a time and keep the drop whenever the model
+    stays infeasible without it. Solves at this problem size are ~0.02 s, so the
+    extra passes are cheap and the payoff is a list a human can actually act on.
+    """
+    model, _, _, assumptions = _build_model(relaxable=True, **build_kwargs)
+    if not assumptions:
+        return []
+    by_index = {lit.Index(): (lit, text) for lit, text in assumptions}
+
+    solver = _make_solver(num_workers, random_seed, max_seconds)
+    if solver.Solve(model) != cp_model.INFEASIBLE:
+        return []
+
+    candidates = [i for i in solver.SufficientAssumptionsForInfeasibility() if i in by_index]
+    if not candidates:
+        candidates = list(by_index)
+
+    def infeasible_with(indices):
+        model.ClearAssumptions()
+        model.AddAssumptions([by_index[i][0] for i in indices])
+        return solver.Solve(model) == cp_model.INFEASIBLE
+
+    budget = MAX_SHRINK_SOLVES
+    essential = list(candidates)
+    for index in list(candidates):
+        if budget <= 0 or len(essential) <= 1:
+            break
+        budget -= 1
+        trial = [i for i in essential if i != index]
+        if trial and infeasible_with(trial):
+            essential = trial  # this constraint was not needed to cause the clash
+
+    seen, conflicts = set(), []
+    for index in essential:
+        text = by_index[index][1]
+        if text not in seen:
+            seen.add(text)
+            conflicts.append(text)
+    return conflicts
+
+
+def solve(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps,
+          preferences, impossible_slots, num_sessions, num_tracks, previous_agenda=None,
+          balance_weight=10, similarity_weight=1, num_workers=DEFAULT_NUM_WORKERS,
+          random_seed=DEFAULT_RANDOM_SEED, max_seconds=DEFAULT_MAX_SECONDS,
+          explain=True):
+    """Solve and return a SolveResult. Never prints.
+
+    Pre-flight errors short-circuit the solve. On infeasibility, and when
+    ``explain`` is set, the model is rebuilt with assumption literals so the
+    clashing constraints can be named.
+    """
+    errors, warnings = validate_config(
+        group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps,
+        preferences, impossible_slots, num_sessions, num_tracks, previous_agenda)
+    if errors:
+        return SolveResult(status="PRE_FLIGHT_FAILED", errors=errors, warnings=warnings)
+
+    build_kwargs = dict(
+        group_sessions=group_sessions, joint_sessions=joint_sessions,
+        strict_non_overlaps=strict_non_overlaps,
+        prioritized_non_overlaps=prioritized_non_overlaps,
+        preferences=preferences, impossible_slots=impossible_slots,
+        num_sessions=num_sessions, num_tracks=num_tracks,
+        previous_agenda=previous_agenda, balance_weight=balance_weight,
+        similarity_weight=similarity_weight)
+
+    model, group_vars, joint_session_vars, _ = _build_model(**build_kwargs)
+    solver = _make_solver(num_workers, random_seed, max_seconds)
     status = solver.Solve(model)
 
-    # Check if a feasible or optimal solution is found
-    if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
-        return collect_solution(solver, group_vars, joint_session_vars, joint_sessions, num_sessions)
-    else:
-        return None
+    if status in (cp_model.FEASIBLE, cp_model.OPTIMAL):
+        solution = collect_solution(solver, group_vars, joint_session_vars,
+                                    joint_sessions, num_sessions)
+        return SolveResult(
+            solution=solution,
+            status=solver.StatusName(status),
+            num_changes=calculate_changes(solution, previous_agenda) if previous_agenda else None,
+            moved=compute_moved(solution, previous_agenda),
+            warnings=warnings,
+            objective=solver.ObjectiveValue(),
+            wall_time=solver.WallTime())
+
+    conflicts = []
+    if explain and status == cp_model.INFEASIBLE:
+        conflicts = _explain_infeasible(build_kwargs, num_workers, random_seed, max_seconds)
+
+    return SolveResult(status=solver.StatusName(status), warnings=warnings,
+                       conflicts=conflicts, wall_time=solver.WallTime())
 
 
-def schedule_sessions(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps, preferences, impossible_slots, num_sessions, num_tracks, previous_agenda=None):
-    """ Schedule parallel sessions with constraints and optional previous agenda to minimize changes. """
-    solution = schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps, 
-                                   preferences, impossible_slots, num_sessions, num_tracks, previous_agenda)
+def format_agenda(result, previous_agenda=None):
+    """Render the human-readable agenda block, marking moved items with '*'."""
+    lines = []
+    if previous_agenda:
+        lines.append(f"\nSolution with {result.num_changes} changes compared to the previous agenda:")
 
-    if solution:
-        if previous_agenda:
-            changes = calculate_changes(solution, previous_agenda)
-            print(f"\nSolution with {changes} changes compared to the previous agenda:")
-
-        for sess, items in sorted(solution.items()):
-            normalized_current_items = sorted([item.strip() for item in items])
-            print(f"\nSession {sess}:")
-            if previous_agenda:
-                prev_session_items = sorted([item.strip() for item in previous_agenda.get(sess, [])])
-                for item in normalized_current_items:
-                    if item not in prev_session_items:
-                        print(f"  {item}*")  # Mark with an asterisk to indicate change
-                    else:
-                        print(f"  {item}")
+    for sess, items in sorted(result.solution.items()):
+        normalized_current_items = sorted([item.strip() for item in items])
+        lines.append(f"\nSession {sess}:")
+        moved = result.moved.get(sess, [])
+        for item in normalized_current_items:
+            if previous_agenda and item in moved:
+                lines.append(f"  {item}*")  # Mark with an asterisk to indicate change
             else:
-                for item in normalized_current_items:
-                    print(f"  {item}")
-        
-        # Print in copy-paste format for previous_agenda
-        print("\n\n# Copy-paste format for previous_agenda:")
-        print("previous_agenda = {")
-        for sess, items in sorted(solution.items()):
-            normalized_items = sorted([item.strip() for item in items])
-            items_str = ', '.join(f'"{item}"' for item in normalized_items)
-            print(f"    {sess}: [{items_str}],")
-        print("}")
-        
-        return solution
-    else:
-        print("\nNo feasible solution found")
-        return None
+                lines.append(f"  {item}")
+    return "\n".join(lines)
+
+
+def format_previous_agenda(solution):
+    """Render the copy-paste `previous_agenda = {...}` block."""
+    lines = ["\n\n# Copy-paste format for previous_agenda:", "previous_agenda = {"]
+    for sess, items in sorted(solution.items()):
+        normalized_items = sorted([item.strip() for item in items])
+        items_str = ', '.join(f'"{item}"' for item in normalized_items)
+        lines.append(f"    {sess}: [{items_str}],")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def schedule_sessions_once(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps, preferences, impossible_slots, num_sessions, num_tracks, previous_agenda=None):
+    """ A single run of the scheduling logic to produce one solution. """
+    return solve(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps,
+                 preferences, impossible_slots, num_sessions, num_tracks,
+                 previous_agenda, explain=False).solution
+
+
+def schedule_sessions(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps, preferences, impossible_slots, num_sessions, num_tracks, previous_agenda=None, **solver_options):
+    """ Schedule parallel sessions with constraints and optional previous agenda to minimize changes. """
+    print("\nProceeding with solve...")
+    result = solve(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps,
+                   preferences, impossible_slots, num_sessions, num_tracks, previous_agenda,
+                   **solver_options)
+
+    for message in result.errors:
+        print(f"\nProblem: {message}")
+    for message in result.warnings:
+        print(f"\nNote: {message}")
+
+    if result.ok:
+        print(format_agenda(result, previous_agenda))
+        print(format_previous_agenda(result.solution))
+        return result.solution
+
+    print("\nNo feasible solution found")
+    for message in result.conflicts:
+        print(f"  Cannot all hold at once: {message}")
+    return None

@@ -1,0 +1,10 @@
+# Ranges rather than exact pins, so a fresh install still works years from now.
+# Tested against: ortools 9.15.6755, streamlit 1.50.0, pandas 2.3.3, PyYAML 6.0.3
+# on Python 3.9.6 (macOS).
+#
+# ortools is a ~100 MB wheel with a bundled native solver; it dominates the
+# first-run download. Everything else is small.
+ortools>=9.10,<10
+streamlit>=1.40,<2
+pandas>=2.0,<3
+PyYAML>=6.0,<7
