@@ -18,6 +18,24 @@ echo Parallel session scheduler
 echo ==========================
 echo.
 
+REM Windows lets you double-click a file from inside a ZIP without extracting it,
+REM which copies just that one file to a temp folder. Catch that first, because
+REM the errors it causes further down make no sense to anyone.
+if not exist "app.py" (
+    echo It looks like this was run from inside the ZIP file, so the rest of the
+    echo scheduler is not here.
+    echo.
+    echo To fix it:
+    echo.
+    echo    1. Close this window
+    echo    2. Find the downloaded ZIP file, right-click it, choose "Extract All..."
+    echo    3. Open the folder that appears
+    echo    4. Double-click "Run Scheduler" inside that folder
+    echo.
+    pause
+    exit /b 1
+)
+
 REM ------------------------------------------------------------ find a python
 set "BASE_PYTHON="
 for %%P in (py python) do (
@@ -28,11 +46,18 @@ for %%P in (py python) do (
 )
 
 if not defined BASE_PYTHON (
-    echo Python 3.9 or newer was not found, and it is needed to run the scheduler.
+    echo Python is needed to run the scheduler, and it is not installed yet.
+    echo This is a one-time setup.
     echo.
-    echo Install Python from https://www.python.org/downloads/ and be sure to
-    echo tick "Add Python to PATH" during setup, then double-click this file again.
+    echo The download page is opening in your browser now. On that page:
     echo.
+    echo    1. Click the yellow "Download Python" button at the top
+    echo    2. Run the file it downloads
+    echo    3. IMPORTANT: on the installer's first screen, tick the box
+    echo       "Add python.exe to PATH" before clicking Install
+    echo    4. When it finishes, double-click "Run Scheduler" again
+    echo.
+    start "" https://www.python.org/downloads/windows/
     pause
     exit /b 1
 )

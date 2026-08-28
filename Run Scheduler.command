@@ -25,15 +25,33 @@ echo "Parallel session scheduler"
 echo "=========================="
 echo
 
+# Opening a file from inside a .zip without extracting it copies just that file
+# to a temporary folder. Catch that first; the errors it causes further down make
+# no sense to anyone.
+if [ ! -f "app.py" ]; then
+  echo "It looks like this was run from inside the ZIP file, so the rest of the"
+  echo "scheduler is not here."
+  echo
+  echo "To fix it:"
+  echo
+  echo "   1. Close this window"
+  echo "   2. Find the downloaded ZIP file and double-click it to unpack it"
+  echo "   3. Open the folder that appears"
+  echo "   4. Double-click \"Run Scheduler\" inside that folder"
+  pause_on_exit
+  exit 1
+fi
+
 # ---------------------------------------------------------------- find a python
 if command -v python3 >/dev/null 2>&1; then
   BASE_PYTHON="$(command -v python3)"
 else
-  echo "Python 3 is not installed on this Mac, and it is needed to run the"
-  echo "scheduler."
+  echo "Python is needed to run the scheduler, and it is not installed yet."
+  echo "This is a one-time setup."
   echo
-  echo "The easiest fix: install Python from https://www.python.org/downloads/"
-  echo "then double-click this file again."
+  echo "The download page is opening in your browser now. Download Python,"
+  echo "run the installer, then double-click \"Run Scheduler\" again."
+  open "https://www.python.org/downloads/macos/" 2>/dev/null
   pause_on_exit
   exit 1
 fi

@@ -1,0 +1,75 @@
+PARALLEL SESSION SCHEDULER
+==========================
+
+This builds the parallel-session agenda for a NOvA collaboration meeting.
+You do not need to know any programming to use it.
+
+
+IF YOU DOWNLOADED THIS AS A ZIP FILE
+------------------------------------
+
+Extract it first. Do not run anything from inside the ZIP window.
+
+  Windows : right-click the ZIP file, choose "Extract All...", then open the
+            folder that appears.
+  Mac     : double-click the ZIP file; a folder appears next to it.
+
+
+TO START IT
+-----------
+
+  Windows : double-click        Run Scheduler.bat
+  Mac     : double-click        Run Scheduler.command
+
+A black window opens, then the scheduler appears in your web browser.
+
+Leave the black window open while you work. Closing it quits the scheduler.
+
+
+THE FIRST TIME
+--------------
+
+Two things only happen once.
+
+1. If Python is not installed, the launcher opens the download page for you.
+   Install it, and on Windows be sure to tick the box that says
+   "Add python.exe to PATH" on the installer's first screen. Then double-click
+   Run Scheduler again.
+
+2. The first successful start downloads about 100 MB and can take a few
+   minutes. It will look like nothing is happening. Let it finish. Every start
+   after that takes a few seconds.
+
+Mac only: if you downloaded this as a ZIP, macOS may refuse to open the
+launcher the first time. Right-click "Run Scheduler.command", choose "Open",
+then click "Open" in the box that appears. Only needed once.
+
+
+USING IT
+--------
+
+Across the top: Layout, Requests, Conflicts, Slot restrictions,
+Previous agenda, Solve. Work left to right.
+
+  Layout            How many time slots and how many parallel sessions can run
+                    at once. Naming the slots ("Mon PM", "Tue AM") makes every
+                    other page much easier to read.
+  Requests          Which groups want sessions, and how many each.
+  Conflicts         Which groups must not clash, and which would rather not.
+  Slot restrictions Groups that can only meet at certain times.
+  Previous agenda   If you already have an agenda, the scheduler will keep the
+                    new one as close to it as possible.
+  Solve             Press "Build the schedule".
+
+Your work is NOT saved automatically. Click "Save meeting" in the left-hand
+panel when you want to keep it. Refreshing the browser loses unsaved changes.
+
+If it says the schedule is impossible, it will list exactly which rules clash.
+Relaxing any one of them is enough.
+
+
+IF SOMETHING GOES WRONG
+-----------------------
+
+Read the black window; the messages there are written in plain language.
+Then contact Alex Himmel.

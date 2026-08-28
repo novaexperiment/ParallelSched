@@ -1,0 +1,15 @@
+# cmd.exe is unreliable with LF-only batch files that use multi-line "if (...)"
+# blocks, so force CRLF for .bat on checkout and in the ZIP GitHub generates.
+*.bat text eol=crlf
+
+# The macOS launcher must stay LF, and must keep its executable bit or a
+# double-click silently does nothing.
+*.command text eol=lf
+*.sh      text eol=lf
+
+# Everything else: normalise to LF in the repository, let git pick on checkout.
+*.py   text
+*.yaml text
+*.yml  text
+*.md   text
+*.txt  text

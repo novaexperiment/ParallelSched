@@ -10,6 +10,23 @@ switch between them freely.
 
 ## 1. The app (no Python knowledge needed)
 
+### Getting it, without git
+
+Send this link — it downloads a ZIP straight away, no GitHub account and no
+`git` needed:
+
+<https://github.com/novaexperiment/ParallelSched/archive/refs/heads/main.zip>
+
+Extract the ZIP, then double-click the launcher inside the extracted folder.
+`START HERE.txt` in that folder explains the rest in plain language.
+
+**Extract it first.** Windows and macOS both let you double-click a file from
+inside a ZIP without unpacking it, which copies out that one file on its own and
+leaves the launcher with nothing to run. Both launchers now detect this and say
+so, but it is the most common way this goes wrong.
+
+### Running it
+
 **macOS** — double-click **`Run Scheduler.command`**
 **Windows** — double-click **`Run Scheduler.bat`**
 
@@ -22,8 +39,10 @@ runs start in seconds. Everything is installed into a private folder
 `%LOCALAPPDATA%\ParallelSched` on Windows) — deliberately *outside* this project
 folder, so a project kept in Dropbox does not sync 100 MB of solver binaries.
 
-You need Python 3.9 or newer installed. If it is missing the launcher says so and
-points you at <https://www.python.org/downloads/>.
+You need Python 3.9 or newer installed. If it is missing, the launcher opens the
+download page in the browser and spells out the steps — including ticking
+**"Add python.exe to PATH"**, which the Windows installer leaves off by default
+and which everything else depends on.
 
 **One-time macOS note:** if you downloaded this project as a zip rather than
 cloning it, macOS quarantines the launcher and refuses to run it on a
