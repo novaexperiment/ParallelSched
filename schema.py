@@ -214,6 +214,26 @@ def list_configs(directory=CONFIG_DIR):
     return sorted(names)
 
 
+def most_recent_config(directory=CONFIG_DIR):
+    """The meeting file saved most recently, or None if there are none.
+
+    This is what the app opens on startup: whichever meeting you were last
+    working on is nearly always the one you want next, and alphabetical order
+    is not a useful guess about that.
+    """
+    names = list_configs(directory)
+    if not names:
+        return None
+
+    def saved_at(name):
+        try:
+            return os.path.getmtime(os.path.join(directory, name))
+        except OSError:
+            return 0.0
+
+    return max(names, key=saved_at)
+
+
 def from_legacy_script(path):
     """Extract a config from one of the original .py meeting scripts.
 

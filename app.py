@@ -659,9 +659,9 @@ def main():
     st.set_page_config(page_title="Parallel session scheduler", page_icon="📅",
                        layout="wide")
     if "cfg" not in st.session_state:
-        files = schema.list_configs()
-        if files:
-            load_into_state(schema.load(os.path.join(schema.CONFIG_DIR, files[-1])), files[-1])
+        newest = schema.most_recent_config()
+        if newest:
+            load_into_state(schema.load(os.path.join(schema.CONFIG_DIR, newest)), newest)
         else:
             load_into_state(schema.blank_config())
 
