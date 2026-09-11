@@ -621,7 +621,13 @@ def render_result(cfg, result, slot_names):
                              "re-solve to see the smallest possible change."):
         cfg["previous_agenda"] = {s: sorted(i.strip() for i in items)
                                  for s, items in result.solution.items()}
-        st.session_state.pop("result", None)
+        # Keep the schedule on screen. Only its "what moved" markers are stale
+        # once this becomes the baseline, and those are cheap to recompute - the
+        # page used to throw the whole result away instead, which meant pinning a
+        # draft lost the very agenda you had just decided to keep.
+        result.num_changes = ParallelSched.calculate_changes(
+            result.solution, cfg["previous_agenda"])
+        result.moved = ParallelSched.compute_moved(result.solution, cfg["previous_agenda"])
         st.rerun()
     if action[1].button("Try another arrangement", width="stretch",
                         help="Same rules, different equally-good answer."):
