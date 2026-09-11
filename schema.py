@@ -187,6 +187,20 @@ def to_solver_kwargs(cfg):
     )
 
 
+# The rule-bearing arguments, as opposed to the solver's tuning knobs. Derived
+# from to_solver_kwargs rather than listed twice, so adding a rule there cannot
+# leave the checker quietly blind to it.
+CHECK_FIELDS = ("group_sessions", "joint_sessions", "strict_non_overlaps",
+                "prioritized_non_overlaps", "preferences", "impossible_slots",
+                "num_sessions", "num_tracks", "previous_agenda")
+
+
+def to_check_kwargs(cfg):
+    """Map a config onto ParallelSched.check_agenda's signature."""
+    return {key: value for key, value in to_solver_kwargs(cfg).items()
+            if key in CHECK_FIELDS}
+
+
 def dumps(cfg):
     ordered = {k: cfg[k] for k in KEY_ORDER if k in cfg}
     return yaml.safe_dump(ordered, sort_keys=False, default_flow_style=None,

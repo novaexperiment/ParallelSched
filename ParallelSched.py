@@ -253,6 +253,211 @@ def validate_config(group_sessions, joint_sessions, strict_non_overlaps,
 
 
 
+class AgendaCheck:
+    """What a hand-edited agenda gets wrong, worked out without the solver.
+
+    Mirrors _build_model's rules exactly, including where the model deliberately
+    skips one: constraints naming a group that was never requested are ignored
+    there, so they are ignored here too and reported as warnings instead.
+    """
+
+    def __init__(self, violations=None, soft_violations=None, warnings=None,
+                 counts=None, num_changes=None, moved=None):
+        self.violations = violations or []        # hard rules broken
+        self.soft_violations = soft_violations or []  # [(text, weight)], preferences the solver would penalise
+        self.warnings = warnings or []            # nothing is broken, but something is being ignored
+        self.counts = counts or {}                # slot -> sessions running in parallel
+        self.num_changes = num_changes            # vs previous agenda, or None
+        self.moved = moved or {}                  # slot -> items new to that slot
+
+    @property
+    def ok(self):
+        """True when the agenda breaks no hard rule. Soft conflicts do not count."""
+        return not self.violations
+
+
+def check_agenda(agenda, group_sessions, joint_sessions, strict_non_overlaps,
+                 prioritized_non_overlaps, preferences, impossible_slots,
+                 num_sessions, num_tracks, previous_agenda=None, slot_names=None):
+    """Check a hand-built agenda against the same rules solve() enforces.
+
+    `agenda` is {slot: [label, ...]} exactly as SolveResult.solution gives it.
+    `slot_names` is optional and only makes the messages read naturally.
+    """
+    violations, soft, warnings = [], [], []
+    known = set(group_sessions)
+    joint_labels = {joint_label(j): list(j) for j in joint_sessions}
+    valid_labels = known | set(joint_labels)
+
+    def name(slot):
+        if slot_names and 1 <= slot <= len(slot_names):
+            return slot_names[slot - 1]
+        return f"Slot {slot}"
+
+    placed = {}
+    for slot in range(1, num_sessions + 1):
+        placed[slot] = [str(i).strip() for i in agenda.get(slot, []) if str(i).strip()]
+    for slot in sorted(agenda):
+        if not 1 <= slot <= num_sessions:
+            warnings.append(
+                f"Slot {slot} is outside 1..{num_sessions}, so what is in it is ignored.")
+
+    # label -> the slots holding it, repeats included: a group placed twice in
+    # one slot has to stay visible here.
+    slots_of = {}
+    for slot, items in placed.items():
+        for item in items:
+            slots_of.setdefault(item, []).append(slot)
+
+    def standalone(group):
+        """Slots where the group runs a session of its own."""
+        return set(slots_of.get(group, [])) if group in group_sessions else set()
+
+    def in_joint(group):
+        """Slots where the group is on stage as part of a joint session."""
+        found = set()
+        for label, members in joint_labels.items():
+            if group in members:
+                found |= set(slots_of.get(label, []))
+        return found
+
+    for label in sorted(slots_of):
+        if label not in valid_labels:
+            warnings.append(
+                f"'{label}' matches no requested group or joint session, so no rule "
+                f"applies to it.{_suggest(label, valid_labels)}")
+
+    # How many of each session made it onto the agenda.
+    for group, wanted in sorted(group_sessions.items()):
+        have = len(slots_of.get(group, []))
+        if have < wanted:
+            missing = wanted - have
+            violations.append(
+                f"'{group}' is on the agenda {have} time(s) but asked for {wanted}. "
+                f"Place {missing} more.")
+        elif have > wanted:
+            violations.append(
+                f"'{group}' is on the agenda {have} time(s) but asked for {wanted}. "
+                f"Remove {have - wanted}.")
+
+    for slot, items in sorted(placed.items()):
+        seen = {}
+        for item in items:
+            seen[item] = seen.get(item, 0) + 1
+        for label, count in sorted(seen.items()):
+            if count > 1:
+                violations.append(
+                    f"{name(slot)}: '{label}' appears {count} times in the one slot; "
+                    f"it can only run once at a time.")
+        if len(items) > num_tracks:
+            violations.append(
+                f"{name(slot)} has {len(items)} sessions in parallel but there are only "
+                f"{num_tracks} tracks.")
+
+    # Strict conflicts. The model pairs a joint session against the *other*
+    # group's own sessions but never against another joint, so neither do we.
+    for pair in strict_non_overlaps:
+        group1, group2 = pair
+        clashing = set()
+        if group1 in group_sessions and group2 in group_sessions:
+            clashing |= standalone(group1) & standalone(group2)
+        if group2 in group_sessions:
+            clashing |= in_joint(group1) & standalone(group2)
+        if group1 in group_sessions:
+            clashing |= in_joint(group2) & standalone(group1)
+        for slot in sorted(clashing):
+            violations.append(
+                f"{name(slot)}: '{group1}' and '{group2}' must never share a slot.")
+
+    for group, blocked in (impossible_slots or {}).items():
+        blocked = set(blocked)
+        if not blocked:
+            continue
+        for slot in sorted(standalone(group) & blocked):
+            violations.append(f"{name(slot)}: '{group}' is blocked from this slot.")
+        for label, members in sorted(joint_labels.items()):
+            if group in members:
+                for slot in sorted(set(slots_of.get(label, [])) & blocked):
+                    violations.append(
+                        f"{name(slot)}: '{label}' cannot be here, because '{group}' is "
+                        f"blocked from this slot.")
+
+    # Slot restrictions reach every session the group takes part in, its own and
+    # any joint session it belongs to, exactly as blocked slots do.
+    for group, allowed in (preferences or {}).items():
+        allowed = set(allowed)
+        if not allowed:
+            continue
+        for slot in sorted(standalone(group) - allowed):
+            violations.append(
+                f"{name(slot)}: '{group}' is restricted to slot(s) "
+                f"{sorted(allowed)} and cannot be here.")
+        for label, members in sorted(joint_labels.items()):
+            if group in members:
+                for slot in sorted(set(slots_of.get(label, [])) - allowed):
+                    violations.append(
+                        f"{name(slot)}: '{label}' cannot be here, because '{group}' is "
+                        f"restricted to slot(s) {sorted(allowed)}.")
+
+    for label, members in sorted(joint_labels.items()):
+        at = slots_of.get(label, [])
+        if not at:
+            violations.append(f"'{label}' is not on the agenda anywhere.")
+        elif len(at) > 1:
+            violations.append(
+                f"'{label}' is on the agenda {len(at)} times; a joint session runs once.")
+        for member in members:
+            for slot in sorted(set(at) & standalone(member)):
+                violations.append(
+                    f"{name(slot)}: '{label}' clashes with '{member}'s own session in "
+                    f"the same slot.")
+
+    joints = sorted(joint_labels.items())
+    for index, (label1, members1) in enumerate(joints):
+        for label2, members2 in joints[index + 1:]:
+            if set(members1) & set(members2):
+                shared = set(slots_of.get(label1, [])) & set(slots_of.get(label2, []))
+                for slot in sorted(shared):
+                    violations.append(
+                        f"{name(slot)}: '{label1}' and '{label2}' share a group, so they "
+                        f"cannot run in parallel.")
+
+    # Soft conflicts. Declaring A-vs-B and B-vs-A is common and would otherwise
+    # report the same overlap twice, so keep the strongest weight per pair.
+    worst = {}
+    for group, conflicts in (prioritized_non_overlaps or {}).items():
+        if group not in group_sessions:
+            continue
+        for index, other in enumerate(conflicts):
+            if other not in group_sessions or other == group:
+                continue
+            weight = 10 ** (len(conflicts) - index)
+            for slot in sorted(standalone(group) & standalone(other)):
+                key = (slot, frozenset((group, other)))
+                if weight > worst.get(key, (0, ""))[0]:
+                    worst[key] = (weight, f"{name(slot)}: '{group}' and '{other}' are "
+                                          f"running at the same time.")
+    for weight, text in sorted(worst.values(), key=lambda item: -item[0]):
+        soft.append((text, weight))
+
+    counts = {slot: len(items) for slot, items in placed.items()}
+
+    num_changes = calculate_changes(placed, previous_agenda) if previous_agenda else None
+    moved = compute_moved(placed, previous_agenda)
+
+    # Same message from two rules is noise, not emphasis.
+    def unique(items):
+        seen, out = set(), []
+        for item in items:
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+        return out
+
+    return AgendaCheck(violations=unique(violations), soft_violations=soft,
+                       warnings=unique(warnings), counts=counts,
+                       num_changes=num_changes, moved=moved)
+
 def _build_model(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps,
                  preferences, impossible_slots, num_sessions, num_tracks, previous_agenda=None,
                  balance_weight=10, similarity_weight=1, relaxable=False):

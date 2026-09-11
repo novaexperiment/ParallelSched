@@ -21,7 +21,7 @@ import schema
 NO_RESTRICTION = "(any slot)"
 
 SECTIONS = ["Layout", "Requests", "Conflicts", "Slot restrictions",
-            "Previous agenda", "Solve"]
+            "Previous agenda", "Solve", "Adjust & check"]
 
 
 # --------------------------------------------------------------------------
@@ -177,12 +177,12 @@ def parse_previous_agenda_block(text):
     return {int(slot): [str(i).strip() for i in items] for slot, items in parsed.items()}
 
 
-def agenda_to_df(result, cfg, slot_names):
+def agenda_to_df(solution, moved_by_slot, cfg, slot_names):
     """Slots down the side, parallel tracks across, '*' marking moved items."""
     rows = []
     for slot in range(1, cfg["num_sessions"] + 1):
-        items = sorted(item.strip() for item in result.solution.get(slot, []))
-        moved = set(result.moved.get(slot, []))
+        items = sorted(item.strip() for item in solution.get(slot, []))
+        moved = set((moved_by_slot or {}).get(slot, []))
         row = {"Time slot": slot_names[slot - 1], "#": len(items)}
         for track in range(1, cfg["num_tracks"] + 1):
             label = ""
@@ -205,6 +205,72 @@ def agenda_to_text(agenda, slot_names, num_slots=None):
         name = slot_names[slot - 1] if slot <= len(slot_names) else f"Slot {slot}"
         blocks.append("\n".join([name] + items))
     return "\n\n".join(blocks)
+
+
+UNPLACED = "Not scheduled"
+
+
+def draft_pool(cfg):
+    """Every block that belongs on the agenda, as (token, label) pairs.
+
+    A group asking for three sessions is three separate blocks, so they can be
+    dragged independently. The drag widget identifies items by their text, so a
+    group with more than one session gets numbered tokens ('ND #1', 'ND #2')
+    while everything else keeps its plain label.
+    """
+    pairs = []
+    for group, count in cfg["group_sessions"].items():
+        for index in range(1, int(count) + 1):
+            pairs.append((f"{group} #{index}" if count > 1 else group, group))
+    for joint in cfg["joint_sessions"]:
+        if len(joint) >= 2:
+            label = ParallelSched.joint_label(joint)
+            pairs.append((label, label))
+    return pairs
+
+
+def agenda_to_containers(agenda, cfg, slot_names):
+    """Split an agenda into the drag widget's containers: the holding pen first.
+
+    Anything on the agenda that the config no longer asks for still gets a block,
+    rather than vanishing - it is exactly what the user needs to drag out.
+    """
+    spare = {}
+    for token, label in draft_pool(cfg):
+        spare.setdefault(label, []).append(token)
+
+    containers = [{"header": UNPLACED, "items": []}]
+    for slot in range(1, cfg["num_sessions"] + 1):
+        items = []
+        for entry in agenda.get(slot, []):
+            label = str(entry).strip()
+            if not label:
+                continue
+            items.append(spare[label].pop(0) if spare.get(label) else label)
+        containers.append({"header": slot_names[slot - 1], "items": items})
+
+    containers[0]["items"] = [token for tokens in spare.values() for token in tokens]
+    return containers
+
+
+def containers_to_agenda(containers, cfg):
+    """The inverse: drag containers back to {slot: [label]}, numbering stripped."""
+    label_of = dict(draft_pool(cfg))
+    agenda = {}
+    for slot, container in enumerate(containers):
+        if slot == 0:  # the holding pen is not a time slot
+            continue
+        agenda[slot] = [label_of.get(token, token) for token in container["items"]]
+    return agenda
+
+
+def seed_draft(cfg, result):
+    """What the editor starts from: the last solve, else the pinned agenda, else empty."""
+    if result is not None and result.ok:
+        return {slot: list(items) for slot, items in result.solution.items()}
+    if cfg["previous_agenda"]:
+        return {slot: list(items) for slot, items in cfg["previous_agenda"].items()}
+    return {slot: [] for slot in range(1, cfg["num_sessions"] + 1)}
 
 
 def capacity_summary(cfg):
@@ -600,7 +666,8 @@ def render_result(cfg, result, slot_names):
     # "content" rather than "stretch": stretching spreads a one-digit count across
     # a wide column, which is exactly what makes these tables hard to read.
     st.dataframe(
-        agenda_to_df(result, cfg, slot_names), hide_index=True, width="content",
+        agenda_to_df(result.solution, result.moved, cfg, slot_names),
+        hide_index=True, width="content",
         column_config={
             "Time slot": st.column_config.TextColumn(width="medium"),
             "#": st.column_config.NumberColumn(
@@ -660,6 +727,211 @@ def tab_solve(cfg, slot_names):
         st.warning(message)
     render_result(cfg, result, slot_names)
 
+# The drag component is optional on purpose. It is a small third-party package,
+# and losing it should cost the drag handles and nothing else - so any import
+# failure at all (not installed, broken build, changed API) falls through to the
+# dropdown grid below, which needs nothing beyond Streamlit itself.
+try:
+    from streamlit_sortables import sort_items
+except Exception:  # pragma: no cover - depends on what is installed
+    sort_items = None
+
+
+# The blocks render inside a component iframe, which inherits none of
+# Streamlit's theming. Painting an explicit light panel keeps the text legible
+# whichever theme the page itself is using.
+SORTABLE_STYLE = """
+.sortable-component {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start;
+    background: #f4f4f7; border-radius: 10px; padding: 10px;
+    font-family: "Source Sans Pro", sans-serif;
+}
+.sortable-container {
+    background: #e7e7ee; border-radius: 8px; padding: 6px;
+}
+/* Fixed basis, no growing: with more slots than fit on one row the containers
+   wrap, and stretching would leave the last row's columns twice the width of
+   the first's. Matching the component's own selector exactly, because its
+   `.sortable-component.vertical .sortable-container { flex-grow: 1 }` outranks
+   a plain `.sortable-container` of ours. */
+.sortable-component.vertical .sortable-container {
+    flex: 0 0 168px;
+    /* Stop a full holding pen from stretching every empty slot to match it. */
+    align-self: flex-start;
+}
+.sortable-container-header {
+    font-weight: 600; font-size: 0.78rem; color: #26262e;
+    padding: 2px 4px 6px 4px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* Roomy enough to be an easy drop target while empty. */
+.sortable-container-body { min-height: 58px; }
+.sortable-item {
+    background: #ffffff; color: #26262e; border: 1px solid #c9c9d4;
+    border-radius: 6px; padding: 5px 8px; margin: 4px 0;
+    font-size: 0.8rem; cursor: grab; text-align: center;
+    /* Wrap rather than truncate: a joint session's label is the list of its
+       groups, and 'Joint DetSyst + TB + ...' tells you nothing about which
+       joint session you are looking at. */
+    white-space: normal; overflow-wrap: anywhere;
+}
+"""
+
+
+def grid_editor(cfg, slot_names, draft, key):
+    """Dropdown-per-cell fallback: the agenda table, but every cell is editable."""
+    labels = sorted({label for _, label in draft_pool(cfg)})
+    rows = []
+    for slot in range(1, cfg["num_sessions"] + 1):
+        items = [str(i).strip() for i in draft.get(slot, []) if str(i).strip()]
+        row = {"Time slot": slot_names[slot - 1]}
+        for track in range(1, cfg["num_tracks"] + 1):
+            row[f"Track {track}"] = items[track - 1] if track <= len(items) else ""
+        rows.append(row)
+    columns = ["Time slot"] + [f"Track {t}" for t in range(1, cfg["num_tracks"] + 1)]
+
+    edited = st.data_editor(
+        pd.DataFrame(rows, columns=columns), hide_index=True, width="stretch",
+        disabled=["Time slot"], key=key,
+        column_config={
+            "Time slot": st.column_config.TextColumn(width="medium"),
+            **{f"Track {t}": st.column_config.SelectboxColumn(
+                f"Track {t}", options=[""] + labels, required=False)
+               for t in range(1, cfg["num_tracks"] + 1)},
+        })
+
+    agenda = {}
+    for index, (_, row) in enumerate(edited.iterrows(), start=1):
+        placed = []
+        for track in range(1, cfg["num_tracks"] + 1):
+            value = row.get(f"Track {track}")
+            if value and str(value).strip():
+                placed.append(str(value).strip())
+        agenda[index] = placed
+    return agenda
+
+
+def render_check(cfg, report, draft, slot_names):
+    """Show what the hand-made agenda breaks, worst first."""
+    placed = sum(len(items) for items in draft.values())
+    wanted = sum(cfg["group_sessions"].values()) + len(
+        [j for j in cfg["joint_sessions"] if len(j) >= 2])
+
+    cols = st.columns(4)
+    cols[0].metric("Rules broken", len(report.violations))
+    cols[1].metric("Soft conflicts", len(report.soft_violations))
+    cols[2].metric("Sessions placed", f"{placed} / {wanted}")
+    cols[3].metric("Changes vs previous",
+                   report.num_changes if report.num_changes is not None else "n/a")
+
+    if report.ok:
+        st.success("This agenda breaks no hard rule. The solver could have produced it.")
+    else:
+        st.error(f"{len(report.violations)} thing(s) to fix:")
+        for message in report.violations:
+            st.markdown(f"- {message}")
+
+    if report.soft_violations:
+        with st.expander(f"{len(report.soft_violations)} soft conflict(s) - allowed, "
+                         f"but the solver would avoid them if it could"):
+            for message, weight in report.soft_violations:
+                st.markdown(f"- {message}")
+            st.caption("Listed worst first. These do not make the agenda invalid.")
+
+    for message in report.warnings:
+        st.info(message)
+
+    st.dataframe(
+        agenda_to_df(draft, report.moved, cfg, slot_names),
+        hide_index=True, width="content",
+        column_config={
+            "Time slot": st.column_config.TextColumn(width="medium"),
+            "#": st.column_config.NumberColumn(
+                "#", width="small", help="Sessions running in this slot."),
+        })
+    if cfg["previous_agenda"]:
+        st.caption("`*` marks a session that moved compared to the previous agenda.")
+
+    with st.expander("Plain text (for documents and spreadsheets)"):
+        st.code(agenda_to_text(draft, slot_names, cfg["num_sessions"]), language=None)
+
+
+def tab_adjust(cfg, slot_names):
+    if not cfg["group_sessions"]:
+        st.info("Add some groups first.")
+        return
+
+    st.caption("Move sessions by hand and see immediately which rules that breaks. "
+               "Nothing here changes the config - it is a scratch pad until you "
+               "pin it or hand it back to the solver.")
+
+    # Re-seeding has to remount the editor widget, which otherwise keeps showing
+    # its own copy of the old agenda; bumping the generation changes its key.
+    if "draft" not in st.session_state:
+        st.session_state.draft = seed_draft(cfg, st.session_state.get("result"))
+        st.session_state.draft_gen = 0
+
+    start = st.columns(3)
+    if start[0].button("Start from the solved schedule", width="stretch",
+                       disabled=not (st.session_state.get("result") is not None
+                                     and st.session_state.result.ok),
+                       help="Copy the last result from the Solve page."):
+        st.session_state.draft = seed_draft(cfg, st.session_state.result)
+        st.session_state.draft_gen += 1
+        st.rerun()
+    if start[1].button("Start from the previous agenda", width="stretch",
+                       disabled=not cfg["previous_agenda"]):
+        st.session_state.draft = {slot: list(items)
+                                  for slot, items in cfg["previous_agenda"].items()}
+        st.session_state.draft_gen += 1
+        st.rerun()
+    if start[2].button("Clear the agenda", width="stretch",
+                       help="Empty every slot and start placing sessions yourself."):
+        st.session_state.draft = {slot: [] for slot in range(1, cfg["num_sessions"] + 1)}
+        st.session_state.draft_gen += 1
+        st.rerun()
+
+    draft = st.session_state.draft
+    # The widget must also remount when the meeting itself changes shape, or it
+    # would keep offering blocks for groups that no longer exist.
+    shape = (tuple(slot_names), tuple(sorted(cfg["group_sessions"].items())),
+             tuple(tuple(j) for j in cfg["joint_sessions"]),
+             st.session_state.draft_gen)
+    key = signature_key("draft_editor", shape)
+
+    if sort_items is None:
+        st.caption("Pick a session in any cell to place it. Blank a cell to take it out. "
+                   "(Drag-and-drop is unavailable: `streamlit-sortables` is not installed.)")
+        draft = grid_editor(cfg, slot_names, draft, key)
+    else:
+        st.caption("Drag a session from one slot to another. Drop it in "
+                   f"**{UNPLACED}** to take it off the agenda.")
+        containers = sort_items(
+            agenda_to_containers(draft, cfg, slot_names), multi_containers=True,
+            direction="vertical", custom_style=SORTABLE_STYLE, key=key)
+        draft = containers_to_agenda(containers, cfg)
+
+    st.session_state.draft = draft
+
+    report = ParallelSched.check_agenda(draft, slot_names=slot_names,
+                                        **schema.to_check_kwargs(cfg))
+    render_check(cfg, report, draft, slot_names)
+
+    action = st.columns(2)
+    if action[0].button("Pin as previous agenda", width="stretch", key="pin_draft",
+                        help="Make this the baseline the solver stays close to."):
+        cfg["previous_agenda"] = {slot: sorted(i.strip() for i in items)
+                                  for slot, items in draft.items() if items}
+        st.rerun()
+    if action[1].button("Let the solver finish it", width="stretch",
+                        help="Solve with this draft as the baseline, so the solver keeps "
+                             "what you placed and sorts out the rest."):
+        cfg["previous_agenda"] = {slot: sorted(i.strip() for i in items)
+                                  for slot, items in draft.items() if items}
+        with st.spinner("Solving..."):
+            st.session_state.result = ParallelSched.solve(**schema.to_solver_kwargs(cfg))
+        st.session_state.goto = "Solve"
+        st.rerun()
 
 def main():
     st.set_page_config(page_title="Parallel session scheduler", page_icon="📅",
@@ -688,6 +960,13 @@ def main():
     # and the highlight correct within the same run, so re-clicking is a no-op.
     # Seeding session_state rather than passing default= avoids Streamlit's
     # "created with a default value but also had its value set" warning.
+    # A page can ask to send the user elsewhere - "Let the solver finish it"
+    # hands off to Solve. It cannot set `nav` itself: by the time a page runs the
+    # nav widget already exists, and Streamlit refuses writes to a live widget's
+    # state. So the request is parked and spent here, before the widget is built.
+    if "goto" in st.session_state:
+        st.session_state.nav = st.session_state.pop("goto")
+
     if st.session_state.get("nav") is None:
         st.session_state.nav = st.session_state.get("nav_last") or SECTIONS[0]
 
@@ -708,6 +987,8 @@ def main():
         tab_previous(cfg, slot_names)
     elif section == "Solve":
         tab_solve(cfg, slot_names)
+    elif section == "Adjust & check":
+        tab_adjust(cfg, slot_names)
 
 
 if __name__ == "__main__":

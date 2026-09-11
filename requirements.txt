@@ -8,3 +8,10 @@ ortools>=9.10,<10
 streamlit>=1.40,<2
 pandas>=2.0,<3
 PyYAML>=6.0,<7
+
+# Drag-and-drop blocks on the "Adjust & check" page. A pure-Python wheel (no
+# compiler, no Node) whose JS is pre-built inside it, so it installs the same
+# way everywhere and needs no network at runtime. app.py imports it optionally
+# and falls back to a dropdown grid, so a missing or broken version costs the
+# drag handles and nothing else.
+streamlit-sortables>=0.3,<1
