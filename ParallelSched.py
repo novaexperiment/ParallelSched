@@ -168,17 +168,33 @@ def validate_config(group_sessions, joint_sessions, strict_non_overlaps,
                 f"time slots, and a group cannot appear twice in one slot."
             )
 
-    # A whitelist narrower than the group's own multiplicity is infeasible, and
+    # Slots a group must occupy, counting the joint sessions it belongs to: a
+    # joint session cannot share a slot with a member's own session, nor with
+    # another joint session that shares a group, so they all need distinct slots.
+    def slots_needed(group):
+        own = group_sessions.get(group, 0)
+        joint_count = sum(1 for joint in joint_sessions if group in joint)
+        return own, joint_count, own + joint_count
+
+    def shortfall(group, available, need, explanation):
+        own, joint_count, _ = slots_needed(group)
+        breakdown = f"{own} of its own"
+        if joint_count:
+            breakdown += f" plus {joint_count} joint session(s)"
+        return (f"'{group}' needs {need} slot(s) ({breakdown}) but {explanation}. "
+                f"Give it at least {need}.")
+
+    # A whitelist narrower than what the group actually needs is infeasible, and
     # this message is far clearer than what the solver would say.
     for group, allowed in (preferences or {}).items():
-        if group in group_sessions and allowed:
-            need = group_sessions[group]
+        if not allowed:
+            continue
+        _, _, need = slots_needed(group)
+        if need:
             if len(set(allowed)) < need:
-                errors.append(
-                    f"'{group}' needs {need} sessions but is restricted to "
-                    f"{len(set(allowed))} slot(s) {sorted(set(allowed))}. "
-                    f"Allow it at least {need} slots."
-                )
+                errors.append(shortfall(
+                    group, allowed, need,
+                    f"is restricted to {len(set(allowed))} slot(s) {sorted(set(allowed))}"))
             out_of_range = sorted(s for s in set(allowed) if not 1 <= s <= num_sessions)
             if out_of_range:
                 errors.append(
@@ -186,13 +202,15 @@ def validate_config(group_sessions, joint_sessions, strict_non_overlaps,
                 )
 
     for group, blocked in (impossible_slots or {}).items():
-        if group in group_sessions and blocked:
+        if not blocked:
+            continue
+        _, _, need = slots_needed(group)
+        if need:
             free = [s for s in range(1, num_sessions + 1) if s not in set(blocked)]
-            if len(free) < group_sessions[group]:
-                errors.append(
-                    f"'{group}' needs {group_sessions[group]} sessions but only {len(free)} "
-                    f"slot(s) remain after blocking {sorted(set(blocked))}."
-                )
+            if len(free) < need:
+                errors.append(shortfall(
+                    group, free, need,
+                    f"only {len(free)} slot(s) remain after blocking {sorted(set(blocked))}"))
 
     # Unknown names. The model deliberately skips these, which is handy for
     # carrying stale constraints around, but it also swallows typos silently.
@@ -232,6 +250,7 @@ def validate_config(group_sessions, joint_sessions, strict_non_overlaps,
                     )
 
     return errors, warnings
+
 
 
 def _build_model(group_sessions, joint_sessions, strict_non_overlaps, prioritized_non_overlaps,
@@ -350,22 +369,30 @@ def _build_model(group_sessions, joint_sessions, strict_non_overlaps, prioritize
                     model.Add(session1 != session2).OnlyEnforceIf(penalty_var.Not())
                     overlap_penalties.append((penalty_var, 10 ** (len(conflicts) - i)))  # Prioritize earlier conflicts more strongly
 
-    # Apply preferences (converted to 0-based internally)
+    # Apply preferences (converted to 0-based internally). A restriction covers
+    # every session the group takes part in - its own and any joint session it
+    # belongs to - which is the same reach impossible_slots has. "This group can
+    # only meet in these slots" is not a statement about session bookkeeping, so
+    # a group being on stage jointly does not exempt it. That also means a group
+    # can be restricted while having no standalone sessions of its own.
     for group, preferred_sessions in preferences.items():
-        # Only apply preferences to groups that have standalone sessions
-        if group not in group_vars:
+        joined = [idx for idx, joint in enumerate(joint_sessions) if group in joint]
+        # An empty list is "no restriction", matching how impossible_slots reads
+        # an empty list; forbidding every slot instead would be unsolvable.
+        if not preferred_sessions or not (group in group_vars or joined):
             continue
         shown = sorted(s + 1 for s in preferred_sessions)
         lit = relaxable_constraint(f"'{group}' is restricted to slot(s) {shown}")
-        for session in group_vars[group]:
-            allowed_values = preferred_sessions
+        restricted = list(group_vars.get(group, []))
+        restricted += [joint_session_vars[idx] for idx in joined]
+        for session in restricted:
             if lit is None:
-                model.AddAllowedAssignments([session], [[val] for val in allowed_values])
+                model.AddAllowedAssignments([session], [[val] for val in preferred_sessions])
             else:
                 # AddAllowedAssignments cannot be enforced conditionally, so forbid
                 # the complement instead - equivalent, and relaxable.
                 for val in range(num_sessions):
-                    if val not in allowed_values:
+                    if val not in preferred_sessions:
                         model.Add(session != val).OnlyEnforceIf(lit)
 
     # Ensure joint sessions that share groups don't overlap
