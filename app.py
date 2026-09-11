@@ -194,6 +194,19 @@ def agenda_to_df(result, cfg, slot_names):
     return pd.DataFrame(rows, columns=columns)
 
 
+def agenda_to_text(agenda, slot_names, num_slots=None):
+    """The agenda as plain text: a slot heading, its sessions one per line, blank
+    line between slots. Meant for pasting into documents and spreadsheets, where
+    a table copies badly but a column of lines does not."""
+    blocks = []
+    total = num_slots if num_slots is not None else max(agenda or {1: []})
+    for slot in range(1, total + 1):
+        items = sorted(item.strip() for item in agenda.get(slot, []))
+        name = slot_names[slot - 1] if slot <= len(slot_names) else f"Slot {slot}"
+        blocks.append("\n".join([name] + items))
+    return "\n\n".join(blocks)
+
+
 def capacity_summary(cfg):
     requested = sum(cfg["group_sessions"].values()) + len(cfg["joint_sessions"])
     capacity = cfg["num_sessions"] * cfg["num_tracks"]
@@ -533,6 +546,12 @@ def tab_previous(cfg, slot_names):
         st.dataframe(
             pd.DataFrame(rows), hide_index=True, width="stretch",
             column_config={"Time slot": st.column_config.TextColumn(width="medium")})
+        with st.expander("Plain text (for documents and spreadsheets)"):
+            st.caption("One slot heading per block, its sessions one per line. Use the "
+                       "copy button at the top right of the box.")
+            st.code(agenda_to_text(cfg["previous_agenda"], slot_names,
+                                   max(cfg["num_sessions"], *cfg["previous_agenda"])),
+                    language=None)
         if st.button("Clear previous agenda"):
             cfg["previous_agenda"] = {}
             st.rerun()
@@ -589,6 +608,12 @@ def render_result(cfg, result, slot_names):
         })
     if cfg["previous_agenda"]:
         st.caption("`*` marks a session that moved compared to the previous agenda.")
+
+    with st.expander("Plain text (for documents and spreadsheets)"):
+        st.caption("One slot heading per block, its sessions one per line. Use the copy "
+                   "button at the top right of the box.")
+        st.code(agenda_to_text(result.solution, slot_names, cfg["num_sessions"]),
+                language=None)
 
     action = st.columns(2)
     if action[0].button("Pin as previous agenda", width="stretch",
