@@ -287,6 +287,7 @@ def load_into_state(cfg, source_name=None):
     st.session_state.cfg = cfg
     st.session_state.source_name = source_name
     st.session_state.pop("result", None)
+    reset_editors()
     # Slot-name boxes are per meeting; drop them so the newly opened meeting's
     # values show instead of the previous one's.
     for key in [k for k in st.session_state if str(k).startswith("slotname_")]:
@@ -304,6 +305,32 @@ def signature_key(prefix, signature):
     """
     digest = hashlib.md5(repr(signature).encode("utf-8")).hexdigest()[:8]
     return f"{prefix}_{digest}"
+
+
+def reset_editors():
+    """Make every table re-read the config: call after changing cfg behind their backs."""
+    st.session_state.editor_gen = st.session_state.get("editor_gen", 0) + 1
+
+
+def stable_editor(name, build, signature=(), **kwargs):
+    """A data_editor fed the same table on every rerun until it is remounted.
+
+    Streamlit identifies a data_editor partly by the data passed in, so
+    rebuilding that data from cfg - which already holds the last edit - hands it
+    a new identity, and it drops the edit the user just made. That was every
+    other checkbox click being ignored. So the table is built once and held:
+    edits accumulate on top of it in the widget's own state, as Streamlit
+    expects. It is rebuilt from cfg only when the widget has no state to lose -
+    first shown, shown again after visiting another page, or its shape,
+    settings or generation (see reset_editors) changed.
+    """
+    key = signature_key(name, (signature, st.session_state.get("editor_gen", 0)))
+    settings = repr(sorted(kwargs.items()))
+    bases = st.session_state.setdefault("editor_bases", {})
+    held = bases.get(name)
+    if held is None or held[:2] != (key, settings) or key not in st.session_state:
+        held = bases[name] = (key, settings, build())
+    return st.data_editor(held[2], key=key, **kwargs)
 
 
 def sidebar():
@@ -443,8 +470,8 @@ def tab_setup(cfg, slot_names):
 def tab_groups(cfg):
     st.caption("Every group that wants one or more sessions. The group name here is what "
                "every other tab refers to, so spelling matters.")
-    edited = st.data_editor(
-        groups_to_df(cfg),
+    edited = stable_editor(
+        "groups_editor", lambda: groups_to_df(cfg),
         hide_index=True, num_rows="dynamic", width="content",
         column_config={
             "Group": st.column_config.TextColumn(required=True, width="medium"),
@@ -455,8 +482,7 @@ def tab_groups(cfg):
                 default=1, width="small",
                 help="How many sessions this group is asking for. A group cannot "
                      "have two in the same time slot."),
-        },
-        key="groups_editor")
+        })
     cfg["group_sessions"] = df_to_groups(edited)
 
     st.subheader("Joint sessions")
@@ -492,22 +518,21 @@ def tab_conflicts(cfg):
     st.subheader("Never at the same time")
     st.caption("Hard rule. If these cannot all be satisfied the solver reports it as "
                "impossible rather than compromising.")
-    edited_strict = st.data_editor(
-        strict_to_df(cfg),
+    edited_strict = stable_editor(
+        "strict_editor", lambda: strict_to_df(cfg),
         hide_index=True, num_rows="dynamic", width="content",
         column_config={
             "Group A": st.column_config.SelectboxColumn(options=names, width="medium"),
             "Group B": st.column_config.SelectboxColumn(options=names, width="medium"),
-        },
-        key="strict_editor")
+        })
     cfg["strict_non_overlaps"] = df_to_strict(edited_strict)
 
     st.subheader("Prefer not at the same time")
     st.caption("Soft rule, and **priority matters a lot**: within one group, priority 1 "
                "counts ten times as much as priority 2, and a hundred times as much as "
                "priority 3. Set 1 for the clash you least want.")
-    edited_soft = st.data_editor(
-        soft_to_df(cfg),
+    edited_soft = stable_editor(
+        "soft_editor", lambda: soft_to_df(cfg),
         hide_index=True, num_rows="dynamic", width="content",
         column_config={
             "Group": st.column_config.SelectboxColumn(options=names, width="medium"),
@@ -516,8 +541,7 @@ def tab_conflicts(cfg):
             "Priority": st.column_config.NumberColumn(
                 min_value=1, max_value=20, step=1, default=1, width="small",
                 help="1 = most important. Ties keep the order you typed them."),
-        },
-        key="soft_editor")
+        })
     cfg["prioritized_non_overlaps"] = df_to_soft(edited_soft)
 
     weights = soft_weights(cfg)
@@ -566,6 +590,7 @@ def quick_fill(cfg, slot_names):
             key = "allowed_slots" if action.startswith("Restrict") else "impossible_slots"
             for group in targets:
                 cfg[key][group] = list(slots)
+            reset_editors()
             st.success(f"Applied '{chosen}' to {len(targets)} group(s).")
             st.rerun()
 
@@ -585,20 +610,20 @@ def tab_slots(cfg, slot_names):
     st.caption("**Leave a row entirely unticked to mean 'any slot'.** Ticking boxes is a "
                "hard restriction: the group can *only* use the ticked slots. Tick fewer "
                "slots than the group has sessions and the schedule becomes impossible.")
-    allowed = st.data_editor(
-        slots_to_df(cfg, "allowed_slots", slot_names),
+    allowed = stable_editor(
+        "allowed_editor", lambda: slots_to_df(cfg, "allowed_slots", slot_names),
+        signature=grid_signature,
         hide_index=True, width="stretch", disabled=["Group"],
-        column_config={"Group": st.column_config.TextColumn(width="medium")},
-        key=signature_key("allowed_editor", grid_signature))
+        column_config={"Group": st.column_config.TextColumn(width="medium")})
     cfg["allowed_slots"] = df_to_slots(allowed, slot_names)
 
     st.subheader("Block slots")
     st.caption("Slots this group cannot use. Tick nothing to leave it free.")
-    blocked = st.data_editor(
-        slots_to_df(cfg, "impossible_slots", slot_names),
+    blocked = stable_editor(
+        "blocked_editor", lambda: slots_to_df(cfg, "impossible_slots", slot_names),
+        signature=grid_signature,
         hide_index=True, width="stretch", disabled=["Group"],
-        column_config={"Group": st.column_config.TextColumn(width="medium")},
-        key=signature_key("blocked_editor", grid_signature))
+        column_config={"Group": st.column_config.TextColumn(width="medium")})
     cfg["impossible_slots"] = df_to_slots(blocked, slot_names)
 
 
@@ -778,7 +803,7 @@ SORTABLE_STYLE = """
 """
 
 
-def grid_editor(cfg, slot_names, draft, key):
+def grid_editor(cfg, slot_names, draft, signature):
     """Dropdown-per-cell fallback: the agenda table, but every cell is editable."""
     labels = sorted({label for _, label in draft_pool(cfg)})
     rows = []
@@ -790,9 +815,9 @@ def grid_editor(cfg, slot_names, draft, key):
         rows.append(row)
     columns = ["Time slot"] + [f"Track {t}" for t in range(1, cfg["num_tracks"] + 1)]
 
-    edited = st.data_editor(
-        pd.DataFrame(rows, columns=columns), hide_index=True, width="stretch",
-        disabled=["Time slot"], key=key,
+    edited = stable_editor(
+        "draft_grid", lambda: pd.DataFrame(rows, columns=columns), signature=signature,
+        hide_index=True, width="stretch", disabled=["Time slot"],
         column_config={
             "Time slot": st.column_config.TextColumn(width="medium"),
             **{f"Track {t}": st.column_config.SelectboxColumn(
@@ -897,18 +922,18 @@ def tab_adjust(cfg, slot_names):
     shape = (tuple(slot_names), tuple(sorted(cfg["group_sessions"].items())),
              tuple(tuple(j) for j in cfg["joint_sessions"]),
              st.session_state.draft_gen)
-    key = signature_key("draft_editor", shape)
 
     if sort_items is None:
         st.caption("Pick a session in any cell to place it. Blank a cell to take it out. "
                    "(Drag-and-drop is unavailable: `streamlit-sortables` is not installed.)")
-        draft = grid_editor(cfg, slot_names, draft, key)
+        draft = grid_editor(cfg, slot_names, draft, shape)
     else:
         st.caption("Drag a session from one slot to another. Drop it in "
                    f"**{UNPLACED}** to take it off the agenda.")
         containers = sort_items(
             agenda_to_containers(draft, cfg, slot_names), multi_containers=True,
-            direction="vertical", custom_style=SORTABLE_STYLE, key=key)
+            direction="vertical", custom_style=SORTABLE_STYLE,
+            key=signature_key("draft_editor", shape))
         draft = containers_to_agenda(containers, cfg)
 
     st.session_state.draft = draft
