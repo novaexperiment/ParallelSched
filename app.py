@@ -789,18 +789,69 @@ SORTABLE_STYLE = """
     padding: 2px 4px 6px 4px; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis;
 }
-/* Roomy enough to be an easy drop target while empty. */
-.sortable-container-body { min-height: 58px; }
+/* A column rather than stacked margins, which collapse and make the height
+   of a body impossible to state exactly - and it has to be stated exactly. */
+.sortable-container-body {
+    display: flex; flex-direction: column; gap: %(gap)dpx; padding: %(pad)dpx 0;
+    box-sizing: border-box; overflow: visible;
+}
 .sortable-item {
     background: #ffffff; color: #26262e; border: 1px solid #c9c9d4;
-    border-radius: 6px; padding: 5px 8px; margin: 4px 0;
-    font-size: 0.8rem; cursor: grab; text-align: center;
+    border-radius: 6px; padding: 0 8px; margin: 0;
+    font-size: 13px; line-height: %(line)dpx; cursor: grab;
+    text-align: center; box-sizing: border-box; overflow: hidden;
     /* Wrap rather than truncate: a joint session's label is the list of its
        groups, and 'Joint DetSyst + TB + ...' tells you nothing about which
        joint session you are looking at. */
     white-space: normal; overflow-wrap: anywhere;
 }
+/* The size, restated against the component's own rules: its
+   `.sortable-component.vertical .sortable-item` sets display, and its
+   `.sortable-item:hover` sets a full height, which would stretch whichever block
+   the pointer is over - mid-drag, exactly when sizes must hold still. */
+.sortable-component.vertical .sortable-item,
+.sortable-component.vertical .sortable-item:hover {
+    display: flex; align-items: center; justify-content: center;
+    height: %(item)dpx; flex: 0 0 auto; margin: 0;
+}
 """
+
+# Every size here is fixed for the length of a drag, and that is what keeps the
+# drag widget from crashing. It moves a block into whichever column the block
+# overlaps most, re-measuring after every move. If the move itself changes a
+# size - a block of a different height takes the spot, a column grows by one
+# block - the other column can come out ahead again, the block moves back, and
+# it flips between the two until React gives up (the "Minified React error
+# #185" this used to raise). With identical blocks and columns that do not
+# resize, a move leaves every measurement as it was and there is nothing to
+# flip back to. Sizes are recomputed from the agenda between drags.
+BLOCK_LINE = 16      # px per line of label text
+BLOCK_PAD = 12       # px of vertical padding and border inside a block
+BLOCK_GAP = 6        # px between blocks
+BODY_PAD = 4         # px above the first block and below the last
+CHARS_PER_LINE = 16  # deliberately low: a label clipped is better than one cramped
+
+
+def sortable_style(containers):
+    """SORTABLE_STYLE with sizes for these containers, fixed for the next drag."""
+    longest = max((len(item) for c in containers for item in c["items"]), default=1)
+    lines = min(3, max(1, -(-longest // CHARS_PER_LINE)))
+    item = lines * BLOCK_LINE + BLOCK_PAD
+
+    def body(count):
+        # One spare row, so the column a block is dragged into does not grow.
+        count += 1
+        return 2 * BODY_PAD + count * item + (count - 1) * BLOCK_GAP
+
+    slots = max((len(c["items"]) for c in containers[1:]), default=0)
+    return (SORTABLE_STYLE % {"gap": BLOCK_GAP, "pad": BODY_PAD, "line": BLOCK_LINE,
+                              "item": item}
+            + ".sortable-container-body { height: %dpx; }\n" % body(slots)
+            # The holding pen is sized on its own, or clearing the agenda would
+            # stretch every slot to the height of the whole pile. It is the first
+            # div in the component; the only element before it is the <style>.
+            + ".sortable-container:first-of-type .sortable-container-body "
+              "{ height: %dpx; }\n" % body(len(containers[0]["items"])))
 
 
 def grid_editor(cfg, slot_names, draft, signature):
@@ -930,11 +981,18 @@ def tab_adjust(cfg, slot_names):
     else:
         st.caption("Drag a session from one slot to another. Drop it in "
                    f"**{UNPLACED}** to take it off the agenda.")
+        containers = agenda_to_containers(draft, cfg, slot_names)
+        style = sortable_style(containers)
         containers = sort_items(
-            agenda_to_containers(draft, cfg, slot_names), multi_containers=True,
-            direction="vertical", custom_style=SORTABLE_STYLE,
-            key=signature_key("draft_editor", shape))
+            containers, multi_containers=True, direction="vertical",
+            custom_style=style, key=signature_key("draft_editor", shape))
         draft = containers_to_agenda(containers, cfg)
+        # The style went out before this run learned about the drop that
+        # triggered it. If that drop changed the sizes, send the right ones now,
+        # before the next drag starts from stale ones.
+        if sortable_style(containers) != style:
+            st.session_state.draft = draft
+            st.rerun()
 
     st.session_state.draft = draft
 
