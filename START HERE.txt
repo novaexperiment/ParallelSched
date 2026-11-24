@@ -31,10 +31,14 @@ THE FIRST TIME
 
 Two things only happen once.
 
-1. If Python is not installed, the launcher opens the download page for you.
-   Install it, and on Windows be sure to tick the box that says
-   "Add python.exe to PATH" on the installer's first screen. Then double-click
-   Run Scheduler again.
+1. If a compatible Python is not installed, the launcher opens the download
+   page for you. On Windows, install the Python install manager, then open
+   Command Prompt and run:
+
+     py install 3.11-64
+
+   Double-click Run Scheduler again. Windows needs x86-64 Python 3.9 to 3.14;
+   on ARM Windows, install the x86-64 version of Python.
 
 2. The first successful start downloads about 100 MB and can take a few
    minutes. It will look like nothing is happening. Let it finish. Every start

@@ -11,7 +11,7 @@ setlocal
 cd /d "%~dp0"
 
 set "APPDIR=%LOCALAPPDATA%\ParallelSched"
-set "VENV=%APPDIR%\venv"
+set "VENV=%APPDIR%\venv-win-x64"
 set "PYTHON=%VENV%\Scripts\python.exe"
 
 echo Parallel session scheduler
@@ -36,26 +36,53 @@ if not exist "app.py" (
     exit /b 1
 )
 
-REM ------------------------------------------------------------ find a python
-set "BASE_PYTHON="
-for %%P in (py python) do (
-    if not defined BASE_PYTHON (
-        %%P -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1
-        if not errorlevel 1 set "BASE_PYTHON=%%P"
+REM Keep the old venv untouched: it may have been created with incompatible Python.
+if exist "%PYTHON%" (
+    "%PYTHON%" -c "import sys, sysconfig; sys.exit(0 if sys.implementation.name == 'cpython' and (3, 9) <= sys.version_info[:2] <= (3, 14) and sysconfig.get_platform() == 'win-amd64' else 1)" >nul 2>&1
+    if errorlevel 1 (
+        echo The scheduler's Python environment is broken or incompatible:
+        echo %VENV%
+        echo Close this window and rename that folder, then run the scheduler again.
+        echo Your meeting files will not be affected.
+        pause
+        exit /b 1
     )
+    goto environment_ready
+)
+if exist "%VENV%" (
+    echo The scheduler's Python environment is incomplete:
+    echo %VENV%
+    echo Close this window and rename that folder, then run the scheduler again.
+    echo Your meeting files will not be affected.
+    pause
+    exit /b 1
+)
+
+REM ------------------------------------------------------------ find a python
+REM Do not let the Python install manager install a runtime during detection.
+set "PYTHON_MANAGER_AUTOMATIC_INSTALL=0"
+set "BASE_PYTHON="
+for %%V in (3.11 3.12 3.13 3.14 3.10 3.9) do (
+    if not defined BASE_PYTHON (
+        py -%%V-64 -c "import sys, sysconfig; sys.exit(0 if sys.implementation.name == 'cpython' and (3, 9) <= sys.version_info[:2] <= (3, 14) and sysconfig.get_platform() == 'win-amd64' else 1)" >nul 2>&1
+        if not errorlevel 1 set "BASE_PYTHON=py -%%V-64"
+    )
+)
+if not defined BASE_PYTHON (
+    python -c "import sys, sysconfig; sys.exit(0 if sys.implementation.name == 'cpython' and (3, 9) <= sys.version_info[:2] <= (3, 14) and sysconfig.get_platform() == 'win-amd64' else 1)" >nul 2>&1
+    if not errorlevel 1 set "BASE_PYTHON=python"
 )
 
 if not defined BASE_PYTHON (
-    echo Python is needed to run the scheduler, and it is not installed yet.
-    echo This is a one-time setup.
+    echo A compatible 64-bit x86 Python 3.9 through 3.14 was not found.
+    echo The scheduler recommends Python 3.11.
     echo.
-    echo The download page is opening in your browser now. On that page:
+    echo Install the Python install manager from the page opening now.
+    echo Then open Command Prompt and run:
     echo.
-    echo    1. Click the yellow "Download Python" button at the top
-    echo    2. Run the file it downloads
-    echo    3. IMPORTANT: on the installer's first screen, tick the box
-    echo       "Add python.exe to PATH" before clicking Install
-    echo    4. When it finishes, double-click "Run Scheduler" again
+    echo    py install 3.11-64
+    echo.
+    echo Then double-click "Run Scheduler" again.
     echo.
     start "" https://www.python.org/downloads/windows/
     pause
@@ -63,20 +90,19 @@ if not defined BASE_PYTHON (
 )
 
 REM ---------------------------------------------------------- build if needed
-if not exist "%PYTHON%" (
-    echo First-time setup. This downloads about 100 MB and may take a few minutes.
-    echo Installing into: %VENV%
+echo First-time setup. This downloads about 100 MB and may take a few minutes.
+echo Installing into: %VENV%
+echo.
+if not exist "%APPDIR%" mkdir "%APPDIR%"
+%BASE_PYTHON% -m venv "%VENV%"
+if errorlevel 1 (
     echo.
-    if not exist "%APPDIR%" mkdir "%APPDIR%"
-    %BASE_PYTHON% -m venv "%VENV%"
-    if errorlevel 1 (
-        echo.
-        echo Could not create the Python environment.
-        pause
-        exit /b 1
-    )
+    echo Could not create the Python environment.
+    pause
+    exit /b 1
 )
 
+:environment_ready
 REM Reinstall when requirements.txt is newer than our success marker.
 set "STAMP=%VENV%\.requirements-installed"
 set "NEEDS_INSTALL="
@@ -93,7 +119,7 @@ if defined NEEDS_INSTALL (
     "%PYTHON%" -m pip install --quiet -r requirements.txt
     if errorlevel 1 (
         echo.
-        echo Could not install the dependencies. Are you online?
+        echo Could not install the dependencies. Check the error above.
         pause
         exit /b 1
     )

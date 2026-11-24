@@ -39,10 +39,15 @@ runs start in seconds. Everything is installed into a private folder
 `%LOCALAPPDATA%\ParallelSched` on Windows) — deliberately *outside* this project
 folder, so a project kept in Dropbox does not sync 100 MB of solver binaries.
 
-You need Python 3.9 or newer installed. If it is missing, the launcher opens the
-download page in the browser and spells out the steps — including ticking
-**"Add python.exe to PATH"**, which the Windows installer leaves off by default
-and which everything else depends on.
+On Windows, the launcher selects an installed x86-64 CPython 3.9 through 3.14,
+preferring 3.11. If none is available, install the Python install manager from
+<https://www.python.org/downloads/windows/>, then run `py install 3.11-64` in
+Command Prompt and try the launcher again. On ARM Windows, use an x86-64 Python
+installation. The launcher creates a separate `venv-win-x64` environment, leaving
+any older `venv` untouched.
+
+On macOS, you need Python 3.9 or newer installed. If it is missing, the launcher
+opens the download page in the browser.
 
 **One-time macOS note:** if you downloaded this project as a zip rather than
 cloning it, macOS quarantines the launcher and refuses to run it on a
